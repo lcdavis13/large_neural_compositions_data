@@ -162,5 +162,4 @@ cython_debug/
 
 synthetic/
 /.vscode
-/data
 *.zip
