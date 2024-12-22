@@ -48,6 +48,14 @@ def process_folder(base_dir):
             print(f"\nWARNING: Removing {len(single_cols)} columns with only one sample. {single_cols}\n")
             annotated = annotated.drop(columns=single_cols)
 
+        # Remove rows with 0 features
+        row_counts = annotated.astype(bool).sum(axis=1)
+        zero_rows = row_counts[row_counts == 0].index
+        if len(zero_rows) > 0:
+            print(f"\nWARNING: Removing {len(zero_rows)} rows with no features. {zero_rows}\n")
+            annotated = annotated.drop(index=zero_rows)
+        
+
         # Save column ids
         column_ids_path = os.path.join(subfolder_path, "P-column-ids.csv")
         column_ids = try_load(column_ids_path)
