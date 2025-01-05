@@ -41,19 +41,29 @@ def process_folder(base_dir):
             annotated.columns = range(0, annotated.shape[1])
             annotated.to_csv(annotated_path, header=False, index=True)
 
-        # Remove columns with only 1 example
-        col_counts = annotated.astype(bool).sum(axis=0)
-        single_cols = col_counts[col_counts == 1].index
-        if len(single_cols) > 0:
-            print(f"\nWARNING: Removing {len(single_cols)} columns with only one sample. {single_cols}\n")
-            annotated = annotated.drop(columns=single_cols)
+        # TODO: finite loop of removing columns then rows, since removing rows w 1 feature can columns w only 1 example
+        all_single_cols = []
+        for i in range(10):
 
-        # Remove rows with 0 features
-        row_counts = annotated.astype(bool).sum(axis=1)
-        zero_rows = row_counts[row_counts == 0].index
-        if len(zero_rows) > 0:
-            print(f"\nWARNING: Removing {len(zero_rows)} rows with no features. {zero_rows}\n")
-            annotated = annotated.drop(index=zero_rows)
+            # Remove columns with only 1 example
+            col_counts = annotated.astype(bool).sum(axis=0)
+            single_cols = col_counts[col_counts <= 1].index
+            if len(single_cols) > 0:
+                print(f"\nWARNING: Removing {len(single_cols)} columns with only one sample. {single_cols}\n")
+                annotated = annotated.drop(columns=single_cols)
+                all_single_cols.extend(single_cols)
+            else:
+                print(f"No columns to remove, number of remaining columns: {len(annotated.columns)}")
+
+            # Remove rows with only 1 feature
+            row_counts = annotated.astype(bool).sum(axis=1)
+            single_rows = row_counts[row_counts <= 1].index
+            if len(single_rows) > 0:
+                print(f"\nWARNING: Removing {len(single_rows)} rows with only one feature. {single_rows}\n")
+                annotated = annotated.drop(index=single_rows)
+            else:
+                print(f"No rows to remove, number of remaining rows: {len(annotated.index)}")
+                break
         
 
         # Save column ids
@@ -84,8 +94,21 @@ def process_folder(base_dir):
         standardized = try_load(standardized_file)
         if standardized is None:
             # Calculate the scale factor for each column
-            scale_factors = annotated.apply(lambda col: np.std(col[col != 0]) if col.name not in single_cols else 1.0, axis=0)
-            standardized = annotated.div(scale_factors, axis=1).fillna(0)
+            scale_factors = annotated.apply(lambda col: np.std(col[col != 0]), axis=0)
+            # Replace any zero scale factors (due to zero variance because all nonzero elements have same value) with the average scale factor
+            avg_scale_factor = np.mean(scale_factors[scale_factors != 0])
+            scale_factors[scale_factors == 0] = avg_scale_factor
+
+            if scale_factors.isnull().values.any():
+                print("\n\nERROR: NULL VALUES DETECTED.\n\n")
+                return
+            if scale_factors.isna().values.any():
+                print("\n\nERROR: NA VALUES DETECTED.\n\n")
+                return
+            if np.isinf(scale_factors).values.any():
+                print("\n\nERROR: INFINITE VALUES DETECTED.\n\n")
+                return
+            standardized = annotated.div(scale_factors, axis=1)
             standardized.to_csv(standardized_file, header=False, index=False)
             scale_factors.to_csv(scalefactors_file, header=False, index=True)
 
@@ -218,6 +241,52 @@ def process_folder(base_dir):
             train_uniformed.to_csv(train_uniformed_file, header=False, index=False)
             test_uniformed.to_csv(test_uniformed_file, header=False, index=False)
 
+        # Generate condensed format files
+        print("condensing")
+        def generate_pos_val_files(data, output_prefix):
+            for split_name, split_data in data.items():
+                pos_file_path = os.path.join(subfolder_path, f"{output_prefix}_{split_name}-pos.csv")
+                val_file_path = os.path.join(subfolder_path, f"{output_prefix}_{split_name}-val.csv")
+
+                if not os.path.exists(pos_file_path) or not os.path.exists(val_file_path):
+                    # Create pos and val DataFrames
+                    pos_list = []
+                    val_list = []
+
+                    for row in split_data.itertuples(index=False):
+                        nonzero_positions = [i + 1 for i, value in enumerate(row) if value > 0]
+                        nonzero_values = [value for value in row if value > 0]
+
+                        pos_list.append(nonzero_positions)
+                        val_list.append(nonzero_values)
+
+                    # Pad rows to the same length
+                    max_len = max(len(row) for row in pos_list)
+                    pos_list = [row + [0] * (max_len - len(row)) for row in pos_list]
+                    val_list = [row + [0] * (max_len - len(row)) for row in val_list]
+
+                    pos_df = pd.DataFrame(pos_list)
+                    val_df = pd.DataFrame(val_list)
+
+                    pos_df.to_csv(pos_file_path, header=False, index=False)
+                    val_df.to_csv(val_file_path, header=False, index=False)
+        
+        generate_pos_val_files(
+            {
+                "train": train_raw,
+                "test": test_raw
+            },
+            output_prefix=f"{subfolder}"
+        )
+        generate_pos_val_files(
+            {
+                "train": train_std,
+                "test": test_std
+            },
+            output_prefix=f"{subfolder}-std"
+        )
+
+
         # Step 6: final copies (transposed)
         final_train_file = os.path.join("./data", f"{subfolder}_train.csv")
         final_test_file = os.path.join("./data", f"{subfolder}_test.csv")
@@ -244,7 +313,7 @@ def process_folder(base_dir):
             final_std_test.to_csv(final_std_test_file, header=False, index=False)
             final_train_ids.to_csv(final_train_ids_file, header=False, index=False)
             final_test_ids.to_csv(final_test_ids_file, header=False, index=False)
-            
+        
 
 # Base directory containing the subfolders
 base_directory = "./data"
