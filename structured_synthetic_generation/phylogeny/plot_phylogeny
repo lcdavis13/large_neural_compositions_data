@@ -1,0 +1,111 @@
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from TreeNode import TreeNode
+
+
+def collect_leaf_vectors(tree, vectors=None):
+    if vectors is None:
+        vectors = []
+
+    if not tree.children:
+        vectors.append(tree.features.reshape(1, -1).flatten())
+    else:
+        for child in tree.children:
+            collect_leaf_vectors(child, vectors)
+
+    return np.array(vectors)
+
+
+def project_tree_with_pca(tree, pca=None):
+    if pca is None:
+        leaf_vectors = collect_leaf_vectors(tree)
+        pca = PCA(n_components=1)
+        pca.fit(leaf_vectors)
+
+    shape = tree.features.shape
+    projected_vector = pca.transform(tree.features.reshape(1, -1))
+    new_tree = TreeNode(projected_vector, tree.intrinsic_rate)
+
+    for child in tree.children:
+        new_tree.children.append(project_tree_with_pca(child, pca))
+
+    return new_tree
+
+
+def plot_tree_with_connections(tree, depth=0, x_values=None, y_values=None, connections=None, parent_coords=None):
+    if x_values is None:
+        x_values = []
+    if y_values is None:
+        y_values = []
+    if connections is None:
+        connections = []
+
+    feature_value = tree.features[0][0]
+    node_coord = (feature_value, depth)
+    x_values.append(feature_value)
+    y_values.append(depth)
+
+    if parent_coords:
+        connections.append((parent_coords, node_coord))
+
+    for child in tree.children:
+        plot_tree_with_connections(
+            child, depth + 1, x_values, y_values, connections, parent_coords=node_coord
+        )
+
+    return x_values, y_values, connections
+
+
+# Load the tree from the JSON 
+phylo = "69@4_4x6"
+path = f"structured_synthetic_generation/phylogeny/out/{phylo}/"
+
+with open(f"{path}tree.json", "r") as f:
+    tree_data = json.load(f)
+
+tree = TreeNode.from_dict(tree_data)
+
+# Project the tree using PCA
+pca_tree = project_tree_with_pca(tree)
+
+# Plot the original tree
+x_vals_original, y_vals_original, connections_original = plot_tree_with_connections(tree)
+
+# Plot the PCA-projected tree
+x_vals_pca, y_vals_pca, connections_pca = plot_tree_with_connections(pca_tree)
+
+# Create the plots
+fig, axes = plt.subplots(1, 2, figsize=(16, 8), sharey=True)
+
+# Original Tree Plot
+axes[0].scatter(x_vals_original, y_vals_original, alpha=0.8, label="Nodes (Original)")
+for (parent, child) in connections_original:
+    x = [parent[0], child[0]]
+    y = [parent[1], child[1]]
+    axes[0].plot(x, y, color="gray", alpha=0.6)
+axes[0].set_title("Tree Structure vs Latent feature (arbitrarily chosen)")
+axes[0].set_xlabel("Feature Value (Dimension 0)")
+axes[0].set_ylabel("Tree Depth (Layer)")
+axes[0].invert_yaxis()
+axes[0].grid(True)
+axes[0].legend()
+
+# PCA Tree Plot
+axes[1].scatter(x_vals_pca, y_vals_pca, alpha=0.8, label="Nodes (PCA)")
+for (parent, child) in connections_pca:
+    x = [parent[0], child[0]]
+    y = [parent[1], child[1]]
+    axes[1].plot(x, y, color="gray", alpha=0.6)
+axes[1].set_title("PCA-Projected Tree Structure")
+axes[1].set_xlabel("PCA Projected Feature Value (Dimension 0)")
+axes[1].grid(True)
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
