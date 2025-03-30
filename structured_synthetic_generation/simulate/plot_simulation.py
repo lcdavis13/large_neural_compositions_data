@@ -6,12 +6,13 @@ import os
 
 
 # File paths
-num_otus = 100
+num_otus = 256
 phylo = f"{num_otus}@random"
 taxonomic_level = f"{num_otus}@random"
 inpath = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/out/"
 
-mask_file = f"structured_synthetic_generation/assemblages/binary_out/100_rich55.1_var10.9/x0_0.csv"
+# mask_file = f"structured_synthetic_generation/assemblages/binary_out/100_rich55.1_var10.9/x0_0.csv"
+mask_file = f"structured_synthetic_generation/assemblages/binary_out/256_rich71.8_var17.9/x0_0.csv"
 
 data_file = f'{inpath}data_0.csv'
 normed_file = f'{inpath}normed_0.csv'

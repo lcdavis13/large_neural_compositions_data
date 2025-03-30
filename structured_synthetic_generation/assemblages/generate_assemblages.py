@@ -2,7 +2,6 @@ import json
 import numpy as np
 import pandas as pd
 import os
-import scipy.sparse as sp
 from dotsy import dicy
 
 slurm_id = int(os.getenv('SLURM_ARRAY_TASK_ID', '-1'))
@@ -57,8 +56,8 @@ def richness_stddev(S, S1=69, SD1=0.13, S2=5747, SD2=0.016):
 
 def main():
     p = dicy()
-    p.N = 100  # Number of OTUs
-    p.M = 1000  # Number of samples
+    p.N = 256  # Number of OTUs
+    p.M = 100000  # Number of samples
     max_samples_per_file = 5000
 
     p.mean_richness = richness_mean(p.N)

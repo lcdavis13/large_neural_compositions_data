@@ -1,14 +1,9 @@
-import json
-from dotsy import dicy
 import numpy as np
-from collections import deque
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from TreeNode import TreeNode
 
-num_otus = 100
+num_otus = 256
 connectivity = 0.5
 sigma = 0.1*0.1
 
