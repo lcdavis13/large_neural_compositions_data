@@ -193,7 +193,7 @@ def main():
     # assemblages = f"100_rich55.1_var10.9"
     chunk_num = 0 # which assemblage data chunk file we're reading from
     export_steps = 20 # these will be logarithmically spaced
-    samples = 2 # number of data samples to generate (each from a different loaded assemblage)
+    samples = 10 # number of data samples to generate (each from a different loaded assemblage)
     time_path = "structured_synthetic_generation/integration_times/t.csv"
     
     parser = argparse.ArgumentParser(description="Run GLV simulation")
