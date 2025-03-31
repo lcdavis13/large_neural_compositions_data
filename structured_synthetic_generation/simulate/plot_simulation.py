@@ -127,14 +127,14 @@ def plot_ridge(data, title):
     plt.show()
 
 
-def plot_sum_over_time(data_filename, title):
+def plot_sum_mags_over_time(data_filename, title):
     df = pd.read_csv(data_filename, header=0)
 
     # Get only feature columns
     feature_cols = [col for col in df.columns if col not in ['sample', 'time']]
 
     # Sum across features per sample
-    df['total_sum'] = df[feature_cols].sum(axis=1)
+    df['total_sum'] = df[feature_cols].abs().sum(axis=1)
 
     # Average total sum per time point
     sum_by_time = df.groupby('time')['total_sum'].mean().reset_index()
@@ -163,6 +163,8 @@ for file, title in zip(data_files, titles):
     else:
         print(f"File not found: {file} or {mask_file}")
 
-plot_sum_over_time(data_file, 'Feature Sum Over Time')
+plot_sum_mags_over_time(data_file, 'Feature Sum Over Time')
+
+plot_sum_mags_over_time(fitness_file, 'Fitness Sum Over Time')
 
 
