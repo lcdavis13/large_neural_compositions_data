@@ -10,7 +10,7 @@ import warnings
 
 def odeint(func, y0, t):
     """
-    Solves the ODE using the trapezoid rule. This method is differentiable using PyTorch's autograd.
+    Solves the ODE using Heun's Method (improved trapezoid rule). This method is differentiable using PyTorch's autograd.
 
     Args:
         func: The function defining the ODE, dy/dt = func(t, y).
