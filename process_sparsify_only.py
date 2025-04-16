@@ -10,12 +10,15 @@ y_dir = 'structured_synthetic_generation/simulate/out/256@random_lvl_256@random/
 output_dir = 'process_sparsify_out/'
 os.makedirs(output_dir, exist_ok=True)
 
-# Get sorted file lists
+# Resume flag
+resume = True
+
+# File name prefixes
 mask_file_name_prefix = "x0_"
 x0_file_name_prefix = "x0_"
 y_file_name_prefix = "y_"
 
-# out file strings
+# Output naming
 dataset_x_name = "256"
 dataset_y_name = "256-random"
 ids_outfilename = "ids-sparse"
@@ -25,6 +28,7 @@ mask_outfilename = "binary"
 x0_outfilename = "x0"
 y_outfilename = "y"
 
+# Get sorted file lists
 mask_files = sorted([f for f in os.listdir(mask_dir) if f.startswith(mask_file_name_prefix)])
 x0_files = sorted([f for f in os.listdir(x0_dir) if f.startswith(x0_file_name_prefix)])
 y_files = sorted([f for f in os.listdir(y_dir) if f.startswith(y_file_name_prefix)])
@@ -41,12 +45,22 @@ print(f"Max non-zero entries in any row: {global_max}")
 # Process each file trio
 for chunk, (mask_file, x0_file, y_file) in enumerate(zip(mask_files, x0_files, y_files)):
     chunk_suffix = mask_file.replace(mask_file_name_prefix, "")
-    
+
+    # Output paths for checking resume
+    pos_out_path = os.path.join(output_dir, f"{dataset_x_name}_{ids_outfilename}_{chunk_suffix}")
+    x0_out_path_sparse = os.path.join(output_dir, f"{dataset_x_name}_{x0_sparse_outfilename}_{chunk_suffix}")
+    y_out_path_sparse = os.path.join(output_dir, f"{dataset_y_name}_{y_sparse_outfilename}_{chunk_suffix}")
+
+    # If resume is enabled and all expected output files exist, skip processing
+    if resume and all(os.path.exists(f) for f in [pos_out_path, x0_out_path_sparse, y_out_path_sparse]):
+        print(f"Skipping chunk {chunk} (already processed)")
+        continue
+
     # Load data
     mask = pd.read_csv(os.path.join(mask_dir, mask_file), header=None).values
     x0 = pd.read_csv(os.path.join(x0_dir, x0_file), header=None).values
     y = pd.read_csv(os.path.join(y_dir, y_file), header=None).values
-    
+
     num_rows = mask.shape[0]
     pos_out = np.zeros((num_rows, global_max), dtype=int)
     x0_out = np.zeros((num_rows, global_max))
@@ -58,19 +72,16 @@ for chunk, (mask_file, x0_file, y_file) in enumerate(zip(mask_files, x0_files, y
         pos_out[i, :k] = idxs + 1  # Convert to 1-based indexing
         x0_out[i, :k] = x0[i, idxs]
         y_out[i, :k] = y[i, idxs]
-    
-    # Save files
-    pd.DataFrame(pos_out).to_csv(os.path.join(output_dir, f"{dataset_x_name}_{ids_outfilename}_{chunk_suffix}"), header=False, index=False)
-    pd.DataFrame(x0_out).to_csv(os.path.join(output_dir, f"{dataset_x_name}_{x0_sparse_outfilename}_{chunk_suffix}"), header=False, index=False)
-    pd.DataFrame(y_out).to_csv(os.path.join(output_dir, f"{dataset_y_name}_{y_sparse_outfilename}_{chunk_suffix}"), header=False, index=False)
 
-    # Duplicate source files to output directory with new names
-    mask_out_path = os.path.join(output_dir, f"{dataset_x_name}_{mask_outfilename}_{chunk_suffix}")
-    x0_out_path = os.path.join(output_dir, f"{dataset_x_name}_{x0_outfilename}_{chunk_suffix}")
-    y_out_path = os.path.join(output_dir, f"{dataset_y_name}_{y_outfilename}_{chunk_suffix}")
-    shutil.copy(os.path.join(mask_dir, mask_file), mask_out_path)
-    shutil.copy(os.path.join(x0_dir, x0_file), x0_out_path)
-    shutil.copy(os.path.join(y_dir, y_file), y_out_path)
+    # Save sparse outputs
+    pd.DataFrame(pos_out).to_csv(pos_out_path, header=False, index=False)
+    pd.DataFrame(x0_out).to_csv(x0_out_path_sparse, header=False, index=False)
+    pd.DataFrame(y_out).to_csv(y_out_path_sparse, header=False, index=False)
+
+    # Duplicate full source files to output dir
+    shutil.copy(os.path.join(mask_dir, mask_file), os.path.join(output_dir, f"{dataset_x_name}_{mask_outfilename}_{chunk_suffix}"))
+    shutil.copy(os.path.join(x0_dir, x0_file), os.path.join(output_dir, f"{dataset_x_name}_{x0_outfilename}_{chunk_suffix}"))
+    shutil.copy(os.path.join(y_dir, y_file), os.path.join(output_dir, f"{dataset_y_name}_{y_outfilename}_{chunk_suffix}"))
 
     print(f"Processed chunk {chunk}")
 

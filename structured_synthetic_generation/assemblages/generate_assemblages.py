@@ -6,8 +6,8 @@ from dotsy import dicy
 
 slurm_id = int(os.getenv('SLURM_ARRAY_TASK_ID', '-1'))
 
-def generate_composition_data(N, M, mean_richness, stdev_richness, path_dir, binary_path_dir, max_samples_per_file=100):
-    """Generates composition data and saves it in chunks, including binary/boolean version."""
+def generate_composition_data(N, M, mean_richness, stdev_richness, path_dir, binary_path_dir, max_samples_per_file=100, resume=False):
+    """Generates composition data and saves it in chunks, optionally resuming instead of overwriting."""
 
     os.makedirs(path_dir, exist_ok=True)
     os.makedirs(binary_path_dir, exist_ok=True)
@@ -17,6 +17,13 @@ def generate_composition_data(N, M, mean_richness, stdev_richness, path_dir, bin
     num_files = (M // max_samples_per_file) + (1 if M % max_samples_per_file else 0)
 
     for file_index in range(num_files):
+        chunk_file = f"{path_dir}/x0_{file_index}.csv"
+        binary_file = f"{binary_path_dir}/x0_{file_index}.csv"
+
+        if resume and os.path.exists(chunk_file) and os.path.exists(binary_file):
+            print(f"Skipping file_index {file_index} (already exists).")
+            continue
+
         start_sample = file_index * max_samples_per_file
         end_sample = min((file_index + 1) * max_samples_per_file, M)
 
@@ -28,20 +35,17 @@ def generate_composition_data(N, M, mean_richness, stdev_richness, path_dir, bin
             richness = max(2, min(N - 1, richness))  # Ensure richness is within valid range
             collection = np.random.choice(np.arange(N), richness, replace=False)
             y_0 = np.zeros(N)
-            y_0[collection] = 1.0 / richness  # Assign 1/p where p is richness
+            y_0[collection] = 1.0 / richness
 
             chunk_data.append(y_0)
-            chunk_binary.append((y_0 > 0).astype(int))  # Boolean version
+            chunk_binary.append((y_0 > 0).astype(int))
 
-        # Save the 1/n distribution chunk
-        chunk_file = f"{path_dir}/x0_{file_index}.csv"
         pd.DataFrame(chunk_data).to_csv(chunk_file, index=False, header=False)
         print(f"Saved {len(chunk_data)} samples to {chunk_file}")
 
-        # Save the binary/boolean version
-        binary_file = f"{binary_path_dir}/x0_{file_index}.csv"
         pd.DataFrame(chunk_binary).to_csv(binary_file, index=False, header=False)
         print(f"Saved {len(chunk_binary)} binary samples to {binary_file}")
+
 
 # Define power-law interpolation functions
 def richness_mean(S, S1=69, R1=0.72, S2=5747, R2=0.03):
@@ -55,9 +59,11 @@ def richness_stddev(S, S1=69, SD1=0.13, S2=5747, SD2=0.016):
     return np.minimum(a * S ** b, 1.0) * S
 
 def main():
+    resume = True
+
     p = dicy()
     p.N = 256  # Number of OTUs
-    p.M = 100000  # Number of samples
+    p.M = 150000  # Number of samples
     max_samples_per_file = 5000
 
     p.mean_richness = richness_mean(p.N)
@@ -80,7 +86,8 @@ def main():
         p.stdev_richness,
         base_output_path,
         binary_output_path,
-        max_samples_per_file=max_samples_per_file
+        max_samples_per_file=max_samples_per_file, 
+        resume=resume
     )
 
 if __name__ == "__main__":

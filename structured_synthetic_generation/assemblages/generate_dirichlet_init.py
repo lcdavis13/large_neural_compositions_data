@@ -17,10 +17,7 @@ def apply_dirichlet_to_file(input_file, output_file):
     pd.DataFrame(normalized).to_csv(output_file, index=False, header=False)
     print(f"Saved dirichlet-initialized data to {output_file}")
 
-def main():
-    input_base_dir = "structured_synthetic_generation/assemblages/binary_out"
-    output_base_dir = "structured_synthetic_generation/assemblages/dirichlet_init"
-
+def main(input_base_dir, output_base_dir, resume=True):
     # Recursively find all CSV files matching the x0_*.csv pattern
     all_input_files = glob(f"{input_base_dir}/**/x0_*.csv", recursive=True)
 
@@ -28,8 +25,15 @@ def main():
         rel_path = os.path.relpath(input_file, input_base_dir)
         output_file = os.path.join(output_base_dir, rel_path)
 
+        if resume and os.path.exists(output_file):
+            print(f"Skipping {output_file} (already exists).")
+            continue
+
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         apply_dirichlet_to_file(input_file, output_file)
 
 if __name__ == "__main__":
-    main()
+    input_base_dir = "structured_synthetic_generation/assemblages/binary_out"
+    output_base_dir = "structured_synthetic_generation/assemblages/dirichlet_init"
+    resume = True
+    main(input_base_dir, output_base_dir, resume=resume)

@@ -113,16 +113,40 @@ def gLV(fitness_fn, x_0, t):
     # return sol.y.T
 
 
+def linear_time(finaltime, eval_steps):
+    """Generates a linear time vector from 0 to finaltime with eval_steps points."""
+    t = np.linspace(0, finaltime, eval_steps)
+    return t
+
+def log_time(finaltime, eval_steps):
+    """Generates a logarithmic time vector from 0 to finaltime with eval_steps points."""
+    t = np.logspace(0, np.log10(finaltime+1), eval_steps) - 1
+    return t
+
 
 def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_fit, output_file_norm,
-                   t, export_indices, num_otus, samples=None):
+                   t, export_indices, num_otus, samples=None, resume=False):
     """Runs gLV Equation simulation on loaded data."""
     print(f"Loading data from {input_file}...")
     x_0_data = pd.read_csv(input_file, header=None).values
 
     t_export = t[export_indices]
-    
+
+    # Determine how many samples have already been processed
+    start_index = 0
+    if resume and os.path.exists(final_file):
+        try:
+            with open(final_file, 'r') as f:
+                processed = sum(1 for _ in f if _.strip())  # count non-empty lines
+            start_index = processed
+            print(f"Resuming from sample index {start_index}")
+        except Exception as e:
+            print(f"Warning: could not determine resume point from {final_file}: {e}")
+
+
     for i, x_0 in enumerate(x_0_data):
+        if i < start_index:
+            continue
         if samples is not None and i >= samples:
             break
 
@@ -138,7 +162,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         df = pd.DataFrame(x)
         df.insert(0, 'time', t_export)
         df.insert(0, 'sample', i)
-        df.to_csv(output_file, mode='a', index=False, header=not bool(i))
+        df.to_csv(output_file, mode='a', index=False, header=not bool(i and not start_index))
 
         # fitness
         f = fitness_fn(x)
@@ -149,7 +173,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         df = pd.DataFrame(f)
         df.insert(0, 'time', t_export)
         df.insert(0, 'sample', i)
-        df.to_csv(output_file_fit, mode='a', index=False, header=not bool(i))
+        df.to_csv(output_file_fit, mode='a', index=False, header=not bool(i and not start_index))
 
         # normalized x
         sum = x.sum(axis=-1, keepdims=True)
@@ -159,7 +183,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         df = pd.DataFrame(x)
         df.insert(0, 'time', t_export)
         df.insert(0, 'sample', i)
-        df.to_csv(output_file_norm, mode='a', index=False, header=not bool(i))
+        df.to_csv(output_file_norm, mode='a', index=False, header=not bool(i and not start_index))
 
         # append final timepoint to final file with no header
         x_final = x_full[-1]
@@ -168,21 +192,8 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         df = pd.DataFrame(x_final)
         df.to_csv(final_file, mode='a', index=False, header=None)
 
-
         if i % 10 == 0:
             print(f"Completed {i+1}/{len(x_0_data)} samples")
-
-
-def linear_time(finaltime, eval_steps):
-    """Generates a linear time vector from 0 to finaltime with eval_steps points."""
-    t = np.linspace(0, finaltime, eval_steps)
-    return t
-
-def log_time(finaltime, eval_steps):
-    """Generates a logarithmic time vector from 0 to finaltime with eval_steps points."""
-    t = np.logspace(0, np.log10(finaltime+1), eval_steps) - 1
-    return t
-
 
 
 def main():
@@ -190,48 +201,44 @@ def main():
     phylo = f"{num_otus}@random"
     taxonomic_level = f"{num_otus}@random"
     assemblages = f"256_rich71.8_var17.9"
-    # assemblages = f"100_rich55.1_var10.9"
-    chunk_num = 0 # which assemblage data chunk file we're reading from
-    export_steps = 20 # these will be logarithmically spaced
-    samples = 10 # number of data samples to generate (each from a different loaded assemblage)
+    chunk_num = 0
+    export_steps = 20
+    samples = 10
     time_path = "structured_synthetic_generation/integration_times/t.csv"
-    
+    resume = True  # <- NEW
+
     parser = argparse.ArgumentParser(description="Run GLV simulation")
-    parser.add_argument("--phylo", type=str, default=phylo, help="Phylogenetic structure folder string")
-    parser.add_argument("--taxonomic_level", type=str, default=taxonomic_level, help="Taxonomic level folder string")
-    parser.add_argument("--assemblages", type=str, default=assemblages, help="Assemblages folder string")
-    parser.add_argument("--chunk_num", type=int, default=chunk_num, help="Which data chunk file to read from")
-    parser.add_argument("--samples", type=int, default=samples, help="Number of samples to simulate")
-    
+    parser.add_argument("--phylo", type=str, default=phylo)
+    parser.add_argument("--taxonomic_level", type=str, default=taxonomic_level)
+    parser.add_argument("--assemblages", type=str, default=assemblages)
+    parser.add_argument("--chunk_num", type=int, default=chunk_num)
+    parser.add_argument("--samples", type=int, default=samples)
+    parser.add_argument("--resume", action="store_true")  # <- allow CLI resume toggle
+
     args = parser.parse_args()
-    
+
     phylo = args.phylo
     taxonomic_level = args.taxonomic_level
     assemblages = args.assemblages
     chunk_num = args.chunk_num
     samples = args.samples
+    resume = args.resume or resume
 
+    # Load ecosystem parameters
+    interactions_path = f"structured_synthetic_generation/feature_interactions/random_out/{num_otus}/"
+    A = np.loadtxt(f"{interactions_path}A.csv", delimiter=",")
+    r = np.loadtxt(f"{interactions_path}r.csv", delimiter=",")
 
-    # Define fitness function once, based on A and r
     fitness_fn = lambda x: x @ A + r
-    
-    # Compute timesteps for ODE integration
+
     t = np.loadtxt(time_path, delimiter=",")
     finaltime = t[-1]
-
-    # Compute timesteps for exported data (Find closest indices in t for each t_export_target value)
     t_export_target = log_time(finaltime, export_steps)
     export_indices = [np.argmin(np.abs(t - target)) for target in t_export_target]
-
 
     debug_path = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/debug/"
     out_path = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/out/"
     x0_path = f"structured_synthetic_generation/assemblages/uniform_init/{assemblages}/"
-    interactions_path = f"structured_synthetic_generation/feature_interactions/random_out/{num_otus}/"
-
-    # Load ecosystem parameters
-    A = np.loadtxt(f"{interactions_path}A.csv", delimiter=",")
-    r = np.loadtxt(f"{interactions_path}r.csv", delimiter=",")
 
     input_file = f"{x0_path}x0_{chunk_num}.csv"
     output_file = f"{debug_path}data_{chunk_num}.csv"
@@ -239,16 +246,18 @@ def main():
     norm_file = f"{debug_path}normed_{chunk_num}.csv"
     final_file = f"{out_path}y_{chunk_num}.csv"
 
-    # Ensure output file is empty at the start
     os.makedirs(debug_path, exist_ok=True)
     os.makedirs(out_path, exist_ok=True)
-    open(output_file, 'w').close()
-    open(fitness_file, 'w').close()
-    open(norm_file, 'w').close()
-    open(final_file, 'w').close()
+
+    # Only clear files if not resuming
+    if not resume:
+        open(output_file, 'w').close()
+        open(fitness_file, 'w').close()
+        open(norm_file, 'w').close()
+        open(final_file, 'w').close()
 
     run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file, norm_file,
-               t, export_indices, num_otus, samples=samples)
+                   t, export_indices, num_otus, samples=samples, resume=resume)
 
 
 if __name__ == "__main__":
