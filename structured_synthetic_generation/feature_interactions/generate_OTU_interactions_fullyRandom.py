@@ -5,7 +5,7 @@ import os
 
 num_otus = 256
 connectivity = 0.5
-sigma = 0.1*0.1
+stddev = 0.01
 
 
 interactions_path = f"structured_synthetic_generation/feature_interactions/random_out/{num_otus}/"
@@ -15,7 +15,7 @@ bias_path = f"{interactions_path}r.csv"
 
 
 # Generate random matrix of pairwise feature interactions feature_num x feature_num
-feature_interactions = sigma*np.random.normal(size=(num_otus, num_otus))
+feature_interactions = stddev*np.random.normal(size=(num_otus, num_otus))
 
 # connectivity mask
 mask = np.random.rand(num_otus, num_otus) < connectivity
