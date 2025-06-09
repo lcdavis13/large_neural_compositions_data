@@ -9,7 +9,9 @@ import os
 num_otus = 256
 phylo = f"{num_otus}@random"
 taxonomic_level = f"{num_otus}@random"
-inpath = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/debug/"
+# inpath = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/debug/"
+inpath = f"structured_synthetic_generation/simulate/out/256@rank26_lvl_256@rank26/debug/"
+
 
 # mask_file = f"structured_synthetic_generation/assemblages/binary_out/100_rich55.1_var10.9/x0_0.csv"
 mask_file = f"structured_synthetic_generation/assemblages/binary_out/256_rich71.8_var17.9/x0_0.csv"
@@ -110,7 +112,7 @@ def plot_ridge(data, title):
 
         # Clean up axis
         ax.set_yticks([])
-        ax.set_ylabel(str(timepoint), rotation=0, labelpad=20, va='center')
+        ax.set_ylabel(f"{timepoint:.1f}", rotation=0, labelpad=20, va='center')
         ax.set_xlim(data['value'].min(), data['value'].max())
         ax.axhline(y=0, color='white', lw=2)
 
@@ -127,7 +129,7 @@ def plot_ridge(data, title):
     plt.show()
 
 
-def plot_sum_mags_over_time(data_filename, title):
+def plot_sum_mags_over_time(data_filename, title, logscale):
     df = pd.read_csv(data_filename, header=0)
 
     # Get only feature columns
@@ -144,7 +146,11 @@ def plot_sum_mags_over_time(data_filename, title):
     sns.lineplot(data=sum_by_time, x='time', y='total_sum', marker='o')
     plt.title(title)
     plt.xlabel('Time')
-    plt.ylabel('Mean Sum of All Features')
+    if logscale:
+        plt.ylabel('Average L1 Magnitude (logscale)')
+        plt.yscale('log')
+    else:
+        plt.ylabel('Average L1 Magnitude')
     plt.grid(True)
     plt.tight_layout()
     plt.show()
@@ -153,8 +159,9 @@ def plot_sum_mags_over_time(data_filename, title):
 
 # Process each file and create ridge plots
 data_files = [normed_file]#, data_file, fitness_file]
-titles = ['Ridge Plot of Nonzero Feature Values Over Time - Data', 
-          'Ridge Plot of Nonzero Feature Values Over Time - Fitness']
+titles = ['OTU Abundance Distributions vs Time']
+# titles = ['Ridge Plot of Nonzero Feature Values Over Time - Abs Abundance', 
+#           'Ridge Plot of Nonzero Feature Values Over Time - Growth Rate']
 
 for file, title in zip(data_files, titles):
     if os.path.exists(file) and os.path.exists(mask_file):
@@ -163,8 +170,8 @@ for file, title in zip(data_files, titles):
     else:
         print(f"File not found: {file} or {mask_file}")
 
-plot_sum_mags_over_time(data_file, 'Feature Sum Over Time')
+plot_sum_mags_over_time(data_file, 'Absolute Abundance L1 vs Time', logscale=False)
 
-plot_sum_mags_over_time(fitness_file, 'Fitness Sum Over Time')
+plot_sum_mags_over_time(fitness_file, 'Growth Rate L1 vs Time', logscale=True)
 
 

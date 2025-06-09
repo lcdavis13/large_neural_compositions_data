@@ -164,7 +164,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         df.insert(0, 'sample', i)
         df.to_csv(output_file, mode='a', index=False, header=not bool(i and not start_index))
 
-        # fitness
+        # fitness (well, since it's gLV rather than Replicator, it would be more accurate to call it growth rate)
         f = fitness_fn(x)
         f = np.array(f)
         mask = x <= 0
@@ -198,14 +198,16 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
 
 def main():
     num_otus = 256
-    phylo = f"{num_otus}@random"
-    taxonomic_level = f"{num_otus}@random"
+    phylo = f"{num_otus}@26"
+    taxonomic_level = f"{num_otus}@26"
     assemblages = f"256_rich71.8_var17.9"
     chunk_num = 0
     export_steps = 20
-    samples = 10
+    samples = 100
     time_path = "structured_synthetic_generation/integration_times/t.csv"
-    resume = True  # <- NEW
+    # resume = True
+    resume = False
+    # BUG: resume is adding the header again
 
     parser = argparse.ArgumentParser(description="Run GLV simulation")
     parser.add_argument("--phylo", type=str, default=phylo)
@@ -213,7 +215,7 @@ def main():
     parser.add_argument("--assemblages", type=str, default=assemblages)
     parser.add_argument("--chunk_num", type=int, default=chunk_num)
     parser.add_argument("--samples", type=int, default=samples)
-    parser.add_argument("--resume", action="store_true")  # <- allow CLI resume toggle
+    parser.add_argument("--resume", action="store_true") 
 
     args = parser.parse_args()
 
@@ -225,7 +227,7 @@ def main():
     resume = args.resume or resume
 
     # Load ecosystem parameters
-    interactions_path = f"structured_synthetic_generation/feature_interactions/random_out/{num_otus}/"
+    interactions_path = f"structured_synthetic_generation/feature_interactions/randomLowRank_out/{num_otus}@26/"
     A = np.loadtxt(f"{interactions_path}A.csv", delimiter=",")
     r = np.loadtxt(f"{interactions_path}r.csv", delimiter=",")
 
