@@ -42,14 +42,26 @@ def odeint(func, y0, t):
 
 def gLV_ode(t, x, fitness_fn):
     """gLV Equation ODE function using passed fitness function."""
-    inx = x < 0
-    x[inx] = 0
+    # inx = x < 0
+    # x[inx] = 0
     fitness = fitness_fn(x)
     dydt = np.multiply(x, fitness)
-    dydt[inx] = 0
+    # dydt[inx] = 0
     return dydt.flatten()
 
-def safe_gLV_ode(t, x, fitness_fn, warned_flag, clip_min=-1e-8, clip_max=1e8):
+
+def replicator_ode(t, x, fitness_fn):
+    """gLV Equation ODE function using passed fitness function."""
+    # inx = x < 0
+    # x[inx] = 0
+    fitness = fitness_fn(x)
+    # computed weighted average fitness
+    fitness_avg = np.sum(x * fitness) # No need to divide if x is correctly on simplex
+    dydt = np.multiply(x, fitness - fitness_avg)
+    # dydt[inx] = 0
+    return dydt.flatten()
+
+def safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize, clip_min=-1e-8, clip_max=1e8):
     if np.any(x < clip_min):
         if not warned_flag.get("low_warned", False):
             warnings.warn(
@@ -66,9 +78,16 @@ def safe_gLV_ode(t, x, fitness_fn, warned_flag, clip_min=-1e-8, clip_max=1e8):
             )
             warned_flag["high_warned"] = True
 
+    if replicator_normalize:
+        clip_max = 1.0
+
     x = np.clip(x, clip_min, clip_max)
 
-    dxdt = gLV_ode(t, x, fitness_fn)
+    if replicator_normalize:
+        x = x / np.sum(x)  # normalize to sum to 1 in case there were any clipped values
+        dxdt = replicator_ode(t, x, fitness_fn)
+    else:
+        dxdt = gLV_ode(t, x, fitness_fn)
 
     if not np.all(np.isfinite(dxdt)):
         raise ValueError(f"Non-finite derivative at t={t}: {dxdt}")
@@ -76,12 +95,13 @@ def safe_gLV_ode(t, x, fitness_fn, warned_flag, clip_min=-1e-8, clip_max=1e8):
     return dxdt
 
 
-def gLV(fitness_fn, x_0, t):
+
+def gLV(fitness_fn, x_0, t, replicator_normalize):
     warned_flag = {"low_warned": False, "high_warned": False}
 
 
     return odeint(
-        func=lambda t, x: safe_gLV_ode(t, x, fitness_fn, warned_flag),
+        func=lambda t, x: safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize),
         y0=x_0,
         t=t
     )
@@ -125,7 +145,7 @@ def log_time(finaltime, eval_steps):
 
 
 def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_fit, output_file_norm,
-                   t, export_indices, num_otus, samples=None, resume=False):
+                   t, export_indices, num_otus, samples=None, resume=False, replicator_normalization=False):
     """Runs gLV Equation simulation on loaded data."""
     print(f"Loading data from {input_file}...")
     x_0_data = pd.read_csv(input_file, header=None).values
@@ -155,7 +175,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
             print("Problem!!!")
 
         # Solve the ODE
-        x_full = gLV(fitness_fn, x_0, t)
+        x_full = gLV(fitness_fn, x_0, t, replicator_normalization)
         x = x_full[export_indices]
 
         # export debug timesteps
@@ -207,6 +227,7 @@ def main():
     time_path = "structured_synthetic_generation/integration_times/t.csv"
     # resume = True
     resume = False
+    replicator_normalization = True
     # BUG: resume is adding the header again
 
     parser = argparse.ArgumentParser(description="Run GLV simulation")
@@ -238,9 +259,11 @@ def main():
     t_export_target = log_time(finaltime, export_steps)
     export_indices = [np.argmin(np.abs(t - target)) for target in t_export_target]
 
+    x0_path = f"structured_synthetic_generation/assemblages/uniform_init/{assemblages}/"
+
+    # output paths
     debug_path = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/debug/"
     out_path = f"structured_synthetic_generation/simulate/out/{phylo}_lvl_{taxonomic_level}/out/"
-    x0_path = f"structured_synthetic_generation/assemblages/uniform_init/{assemblages}/"
 
     input_file = f"{x0_path}x0_{chunk_num}.csv"
     output_file = f"{debug_path}data_{chunk_num}.csv"
@@ -259,7 +282,7 @@ def main():
         open(final_file, 'w').close()
 
     run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file, norm_file,
-                   t, export_indices, num_otus, samples=samples, resume=resume)
+                   t, export_indices, num_otus, samples=samples, resume=resume, replicator_normalization=replicator_normalization)
 
 
 if __name__ == "__main__":
