@@ -6,11 +6,18 @@ import os
 
 
 otu_num = 256
-proj = f"{otu_num}/random-1-gLV"
+proj = f"{otu_num}/random-1-RepHeun"
+# proj = f"{otu_num}/random-1-RepDEQ"
+# proj = f"{otu_num}/random-1-gLV"
+# proj = f"{otu_num}/random-1-Rep"
 # proj = f"{otu_num}/random-weak-Rep"
 # proj = f"{otu_num}/random-weak-gLV"
 # proj = f"{otu_num}/random-noBias-Rep"
 # proj = f"{otu_num}/random-noBias-gLV"
+# proj = f"{otu_num}/cnode1-1k-Rep"
+# proj = f"{otu_num}/cnode1-100k-Rep"
+# proj = f"{otu_num}/cnode1-1k-gLV"
+# proj = f"{otu_num}/cnode1-100k-gLV"
 inpath = f"synth/simulate/debug/{proj}/"
 mask_file = f"synth/_data/{otu_num}/_binary_0.csv"
 
@@ -40,6 +47,7 @@ def prepare_data_for_ridgeplot(data_filename, mask_filename):
     
     # Ensure mask shape matches (only use as many rows as there are unique samples)
     num_samples = df['sample'].nunique()
+    print(f"Number of samples: {num_samples}")
     mask = mask.iloc[:num_samples]
     mask.columns = feature_cols
 
@@ -165,12 +173,12 @@ def plot_sum_mags_over_time(data_filename, title, logscale):
 
 
 # Process each file and create ridge plots
-data_files = [normed_file]#, data_file, fitness_file]
+ridge_files = [normed_file]#, data_file, fitness_file]
 titles = ['OTU Abundance Distributions vs Time']
 # titles = ['Ridge Plot of Nonzero Feature Values Over Time - Abs Abundance', 
 #           'Ridge Plot of Nonzero Feature Values Over Time - Growth Rate']
 
-for file, title in zip(data_files, titles):
+for file, title in zip(ridge_files, titles):
     if os.path.exists(file) and os.path.exists(mask_file):
         df_long = prepare_data_for_ridgeplot(file, mask_file)
         plot_ridge(df_long, title)

@@ -6,6 +6,10 @@ import pandas as pd
 import os
 import argparse
 import warnings
+import torch
+import torch.nn as nn
+from torchdeq import get_deq
+
 
 
 def main():
@@ -13,7 +17,8 @@ def main():
 
     num_otus = 256
     # replicator_normalization = False
-    replicator_normalization = False
+    replicator_normalization = True
+    replicator_deq = True  # use TorchDEQ to solve for equilibrium instead of Heun IVP
     interactions = "random-1"
     # interactions = "cnode1-1k"
     # interactions = "cnode1-100k"
@@ -51,6 +56,8 @@ def main():
     parser.add_argument("--resume", action="store_true") 
     parser.add_argument("--replicator_normalization", action="store_true", default=replicator_normalization,
                         help="Normalize by the average fitness (as in replicator eqtn) instead of unnormalized (as in gLV)")
+    parser.add_argument("--replicator_deq", action="store_true",
+                        help="When using replicator_normalization, use TorchDEQ instead of Heun.")
 
     args = parser.parse_args()
 
@@ -63,6 +70,8 @@ def main():
     replicator_normalization = args.replicator_normalization or replicator_normalization
     time_file = args.time_file
     export_steps = args.export_steps
+    replicator_deq = args.replicator_deq or replicator_deq
+    print(f"  replicator_deq: {replicator_deq}")
 
     # print the parameters
     print(f"Running GLV simulation with parameters:")
@@ -75,7 +84,7 @@ def main():
     print(f"  replicator_normalization: {replicator_normalization}")
     print(f"  time_file: {time_file}")
 
-    output_suffix = "Rep" if replicator_normalization else "gLV"
+    output_suffix = "RepDEQ" if replicator_deq else "RepHeun" if replicator_normalization else "gLVHeun"
     if rule_augmentation_suffix:
         output_suffix += f"-{rule_augmentation_suffix}"
     
@@ -118,7 +127,76 @@ def main():
         open(final_file, 'w').close()
 
     run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file, norm_file,
-                   t, export_indices, num_otus, samples=samples, resume=resume, replicator_normalization=replicator_normalization)
+               t, export_indices, num_otus, samples=samples, resume=resume,
+               replicator_normalization=replicator_normalization, replicator_deq=replicator_deq)
+
+
+# --- TorchDEQ: replicator equilibrium only (no intermediate states) ---
+class ReplicatorFunc(nn.Module):
+    """Wraps numpy fitness_fn into torch and returns replicator dxdt = x ⊙ (f - x·f)."""
+    def __init__(self, fitness_fn_np):
+        super().__init__()
+        self.fitness_fn_np = fitness_fn_np
+
+    def forward(self, t, x: torch.Tensor):
+        x_np = x.detach().cpu().numpy()
+        f_np = self.fitness_fn_np(x_np)
+        f = torch.from_numpy(np.asarray(f_np)).to(x)
+        xTf = (x * f).sum(dim=-1, keepdim=True)
+        return x * (f - xTf)
+
+class TorchDEQReplicatorEquilibrium(nn.Module):
+    """
+    Fixed-point solver for replicator dynamics.
+    Returns only the final equilibrium x* (no intermediate states).
+    """
+    def __init__(self, alpha=0.25, f_solver="anderson", b_solver="broyden",
+                 f_tol=1e-6, f_max_iter=200, stop_mode="abs"):
+        super().__init__()
+        self.alpha = alpha
+        self.deq = get_deq({
+            "core": "indexing",
+            "ift": True,
+            "f_solver": f_solver, "b_solver": b_solver,
+            "f_tol": f_tol, "f_stop_mode": stop_mode,
+            "f_max_iter": f_max_iter,
+            "n_states": 1,           # eval() -> final-only
+        })
+        self.deq.eval()
+
+    @torch.no_grad()
+    def forward(self, func: nn.Module, x0_np: np.ndarray):
+        eps = 1e-12
+        x0 = torch.from_numpy(np.asarray(x0_np)).to(torch.float32)
+        if x0.ndim == 1: x0 = x0.unsqueeze(0)  # (B=1,N)
+        device = next(func.parameters(), torch.tensor(0.)).device if isinstance(func, nn.Module) else torch.device("cpu")
+        x0 = x0.to(device)
+
+        # normalize & fix support
+        x0 = x0.clamp_min(0.0)
+        x0 = x0 / x0.sum(dim=-1, keepdim=True).clamp_min(eps)
+        mask = (x0 > 0).to(x0.dtype)
+
+        def g(x):
+            dxdt = func(None, x)
+            r = (dxdt / x.clamp_min(eps)) * mask
+            r = r - (x * r).sum(dim=-1, keepdim=True)
+            step = (self.alpha * r).clamp(-20.0, 20.0)
+            y = x * torch.exp(step)                     # zeros stay zero
+            x_next = y * mask
+            x_next = x_next / x_next.sum(dim=-1, keepdim=True).clamp_min(eps)
+            return x_next
+
+        xs, info = self.deq(g, x0)                     # eval(): final state
+        x_star = xs[-1] if isinstance(xs, (list, tuple)) else xs
+        return x_star.squeeze(0).detach().cpu().numpy(), info
+    
+def replicator_equilibrium_deq(fitness_fn, x_0, alpha=0.25):
+    func = ReplicatorFunc(fitness_fn)
+    deq  = TorchDEQReplicatorEquilibrium(alpha=alpha, f_tol=1e-6, f_max_iter=200)
+    x_star, info = deq(func, x_0)   # (N,), info unused here but handy for logging
+    return x_star
+
 
 
 def odeint(func, y0, t):
@@ -214,42 +292,14 @@ def safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize, clip_min=1
     return dxdt
 
 
-
 def gLV(fitness_fn, x_0, t, replicator_normalize):
     warned_flag = {"low_warned": False, "high_warned": False}
-
-
     return odeint(
-        func=lambda t, x: safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize),
+        func=lambda tt, xx: safe_gLV_ode(tt, xx, fitness_fn, warned_flag, replicator_normalize),
         y0=x_0,
         t=t
     )
 
-
-    # t_span = (t[0], t[-1])
-    # t_eval = t
-
-    # sol = solve_ivp(
-    #     # fun=lambda t, x: gLV_ode(t, x, fitness_fn),
-    #     fun=lambda t, x: safe_gLV_ode(t, x, fitness_fn, warned_flag),
-    #     t_span=t_span,
-    #     y0=x_0,
-    #     method='Radau', #'RK45', #'LSODA',
-    #     t_eval=t_eval,
-    #     # atol=1e-9,
-    #     # rtol=1e-9,
-    #     # max_step=1e-6  # optional
-    # )
-
-    # print(t_span)
-    # print(t_eval)
-    # print(t_eval.shape)
-    # print(sol.y.T.shape)
-    # print(sol.t)
-    # print(sol.status)
-    # print(sol.message)
-
-    # return sol.y.T
 
 
 def linear_time(finaltime, eval_steps):
@@ -265,8 +315,10 @@ def log_time(finaltime, eval_steps):
     return t
 
 def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_fit, output_file_norm,
-                   t, export_indices, num_otus, samples=None, resume=False, replicator_normalization=False):
-    """Runs gLV Equation simulation on loaded data, with extinction accounting and final progress flush."""
+                   t, export_indices, num_otus, samples=None, resume=False,
+                   replicator_normalization=False, replicator_deq=False):
+    """Runs gLV/Replicator simulation with extinction accounting, progress/flush, and DEQ support."""
+
     print(f"Loading data from {input_file}...")
     x_0_data = pd.read_csv(input_file, header=None).values
 
@@ -306,58 +358,113 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         if n < 2:
             print("Problem!!!")
 
-        # Solve the ODE
-        x_full = gLV(fitness_fn, x_0, t, replicator_normalization)
+        # Header exactly on the first row we write (matches your improved behavior)
+        write_header = not bool(i and start_index == 0)
 
-        # ----- Extinction accounting (strict zero at final state) -----
-        x_final_raw = x_full[-1]
-        extinct_mask = (x_0 > 0) & (x_final_raw == 0)
-        # If using a tolerance, replace the line above with:
-        # extinct_mask = (x_0 > 0) & (x_final_raw <= extinction_threshold)
+        if replicator_normalization and replicator_deq:
+            # ---------- DEQ equilibrium-only path (export start+final only) ----------
+            # Start state (normalized to simplex for replicator consistency)
+            x_start = x_0.astype(np.float64).copy()
+            x_start = np.clip(x_start, 0.0, None)
+            s0 = x_start.sum()
+            if s0 > 0:
+                x_start = x_start / s0
 
-        n_extinct = int(np.count_nonzero(extinct_mask))
-        if n_extinct:
-            samples_with_extinctions += 1
-            total_extinct_species += n_extinct
-        # --------------------------------------------------------------
+            # Final equilibrium via DEQ
+            x_final_raw = replicator_equilibrium_deq(fitness_fn, x_0, alpha=0.25)
 
-        x = x_full[export_indices]
+            # ----- Extinction accounting (strict zero at final state) -----
+            extinct_mask = (x_0 > 0) & (x_final_raw == 0)
+            # If using a tolerance, replace the line above with:
+            # extinct_mask = (x_0 > 0) & (x_final_raw <= extinction_threshold)
+            n_extinct = int(np.count_nonzero(extinct_mask))
+            if n_extinct:
+                samples_with_extinctions += 1
+                total_extinct_species += n_extinct
+            # --------------------------------------------------------------
 
-        # export debug timesteps
-        df = pd.DataFrame(x)
-        df.insert(0, 'time', t_export)
-        df.insert(0, 'sample', i)
-        df.to_csv(output_file, mode='a', index=False, header=not bool(i and start_index == 0))
+            # Debug exports: only start and final rows
+            times_2 = np.array([t[0], t[-1]], dtype=np.float64)
+            x_dbg = np.vstack([x_start, x_final_raw])  # (2, N)
 
-        # fitness (growth rate)
-        f = fitness_fn(x)
-        f = np.array(f)
-        mask = x <= 0
-        f[mask] = 0
+            # states
+            df = pd.DataFrame(x_dbg)
+            df.insert(0, 'time', times_2)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file, mode='a', index=False, header=write_header)
 
-        df = pd.DataFrame(f)
-        df.insert(0, 'time', t_export)
-        df.insert(0, 'sample', i)
-        df.to_csv(output_file_fit, mode='a', index=False, header=not bool(i and start_index == 0))
+            # fitness (growth rate) at those two rows
+            f2 = np.array(fitness_fn(x_dbg))
+            f2[x_dbg <= 0] = 0
+            df = pd.DataFrame(f2)
+            df.insert(0, 'time', times_2)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file_fit, mode='a', index=False, header=write_header)
 
-        # normalized x
-        sum_ = x.sum(axis=-1, keepdims=True)
-        sum_[sum_ == 0] = 1
-        x = x / sum_ * (n / num_otus)
+            # normalized x (debug scaling)
+            s = x_dbg.sum(axis=-1, keepdims=True); s[s == 0] = 1
+            x_norm2 = x_dbg / s * (n / num_otus)
+            df = pd.DataFrame(x_norm2)
+            df.insert(0, 'time', times_2)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file_norm, mode='a', index=False, header=write_header)
 
-        df = pd.DataFrame(x)
-        df.insert(0, 'time', t_export)
-        df.insert(0, 'sample', i)
-        df.to_csv(output_file_norm, mode='a', index=False, header=not bool(i and start_index == 0))
+            # final file: normalized final point
+            denom = x_final_raw.sum()
+            if denom > 0:
+                x_final = (x_final_raw / denom).reshape(1, num_otus)
+            else:
+                x_final = x_final_raw.reshape(1, num_otus)
+            df = pd.DataFrame(x_final)
+            df.to_csv(final_file, mode='a', index=False, header=None)
 
-        # append final timepoint to final file with no header
-        denom = x_final_raw.sum()
-        if denom > 0:
-            x_final = (x_final_raw / denom).reshape(1, num_otus)
         else:
-            x_final = x_final_raw.reshape(1, num_otus)
-        df = pd.DataFrame(x_final)
-        df.to_csv(final_file, mode='a', index=False, header=None)
+            # ---------- Heun path (trajectory) ----------
+            x_full = gLV(fitness_fn, x_0, t, replicator_normalization)
+
+            # ----- Extinction accounting (strict zero at final state) -----
+            x_final_raw = x_full[-1]
+            extinct_mask = (x_0 > 0) & (x_final_raw == 0)
+            # If using a tolerance, replace the line above with:
+            # extinct_mask = (x_0 > 0) & (x_final_raw <= extinction_threshold)
+            n_extinct = int(np.count_nonzero(extinct_mask))
+            if n_extinct:
+                samples_with_extinctions += 1
+                total_extinct_species += n_extinct
+            # --------------------------------------------------------------
+
+            x = x_full[export_indices]
+
+            # states at debug times
+            df = pd.DataFrame(x)
+            df.insert(0, 'time', t_export)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file, mode='a', index=False, header=write_header)
+
+            # fitness (growth rate) at debug times
+            f = np.array(fitness_fn(x))
+            f[x <= 0] = 0
+            df = pd.DataFrame(f)
+            df.insert(0, 'time', t_export)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file_fit, mode='a', index=False, header=write_header)
+
+            # normalized x (debug scaling)
+            s = x.sum(axis=-1, keepdims=True); s[s == 0] = 1
+            x_norm = x / s * (n / num_otus)
+            df = pd.DataFrame(x_norm)
+            df.insert(0, 'time', t_export)
+            df.insert(0, 'sample', i)
+            df.to_csv(output_file_norm, mode='a', index=False, header=write_header)
+
+            # final file: normalized final point
+            denom = x_final_raw.sum()
+            if denom > 0:
+                x_final = (x_final_raw / denom).reshape(1, num_otus)
+            else:
+                x_final = x_final_raw.reshape(1, num_otus)
+            df = pd.DataFrame(x_final)
+            df.to_csv(final_file, mode='a', index=False, header=None)
 
         # progress printing
         processed_this_run += 1
@@ -368,7 +475,6 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
 
     # --- Final flush: always print the last progress line even if not on the interval ---
     if planned_this_run == 0:
-        # nothing to do this run; still print a consistent status line
         print(f"Completed {start_index}/{total_target} samples | "
               f"Extinctions in {samples_with_extinctions} samples, totaling {total_extinct_species} species")
     elif (processed_this_run % progress_interval) != 0:
@@ -376,6 +482,8 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, output_file_
         print(f"Completed {completed_overall}/{total_target} samples | "
               f"Extinctions in {samples_with_extinctions} samples, totaling {total_extinct_species} species")
 
+    # Final summary line
+    print(f"Extinctions in {samples_with_extinctions} samples, totaling {total_extinct_species} species")
 
 
 if __name__ == "__main__":

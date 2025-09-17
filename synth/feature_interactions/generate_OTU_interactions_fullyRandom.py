@@ -3,13 +3,13 @@ import numpy as np
 import sys
 import os
 
-version_number = "0"
+version_number = "1"
 num_otus = 256
 # sparsity = 0.5
 stddev = 0.01
 identity_factor = 1.0
-r_min = 0.0
-r_max = 1.0
+r_min = 0.4
+r_max = 0.5
 
 # r = np.zeros(num_otus)
 r = np.random.uniform(r_min, r_max, num_otus)
