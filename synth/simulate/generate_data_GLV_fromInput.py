@@ -18,7 +18,7 @@ def main():
     # interactions = "cnode1-1k"
     # interactions = "cnode1-100k"
     assemblages_type = "x0"  # should be the prefix of the chunk file names
-    time_file = "t.csv"
+    time_file = "t_dense.csv"
 
     # what portion of assemblages to process
     chunk_id = "0"

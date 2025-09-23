@@ -19,7 +19,7 @@ def main():
     t_stepnum_multiplier_default = 10.0
 
     parser = argparse.ArgumentParser(
-        description="Run gLV on physical CSV grid AND actual Hofbauer (uncorrected) on an even τ-grid in a separate folder."
+        description="Run gLV on physical CSV grid AND actual Hofbauer (uncorrected) using composition-based adaptive τ-steps."
     )
     parser.add_argument("--num_otus", type=int, default=num_otus)
     parser.add_argument("--interactions", type=str, default=interactions)
@@ -29,13 +29,21 @@ def main():
     parser.add_argument("--time_file", type=str, default=time_file)
     parser.add_argument("--export_steps", type=int, default=export_steps)
 
-    # Hofbauer grid/horizon
+    # Hofbauer horizon / step count
     parser.add_argument("--t_fixed", type=float, default=t_fixed_default,
-                        help="Virtual (Hofbauer) horizon for the replicator run (uncorrected).")
+                        help="Target virtual (replicator) horizon used to set the nominal step size (actual sum of steps may drift).")
     parser.add_argument("--t_stepnum_multiplier", type=float, default=t_stepnum_multiplier_default,
-                        help="Multiplier on (len(t.csv)-1) to set number of τ steps for Hofbauer run.")
+                        help="Multiplier on (len(t.csv)-1) to set the fixed number of τ steps for the Hofbauer run.")
 
-    # (kept for CLI compatibility; not used for Hofbauer replicator)
+    # Composition-based adaptive step size params (no EMA, no clamps, no budget mixing)
+    parser.add_argument("--comp_tol", type=float, default=1e-2,
+                        help="Target per-step composition motion (dimensionless).")
+    parser.add_argument("--comp_delta", type=float, default=1.0,
+                        help="Exponent for adaptivity; 1.0 is strongest, 0.0 disables adaptivity.")
+    parser.add_argument("--l1_smooth_eps", type=float, default=1e-8,
+                        help="Epsilon for smoothed L1 norm sqrt(v^2 + eps^2).")
+
+    # (kept for CLI compatibility)
     parser.add_argument("--print_per_sample", action="store_true")
 
     args = parser.parse_args()
@@ -49,6 +57,9 @@ def main():
     export_steps = args.export_steps
     t_fixed = float(args.t_fixed)
     t_stepnum_multiplier = float(args.t_stepnum_multiplier)
+    comp_tol = float(args.comp_tol)
+    comp_delta = float(args.comp_delta)
+    l1_smooth_eps = float(args.l1_smooth_eps)
 
     print("Running with parameters:")
     print(f"  num_otus: {num_otus}")
@@ -58,6 +69,7 @@ def main():
     print(f"  samples: {samples}")
     print(f"  time_file: {time_file}")
     print(f"  Hofbauer: t_fixed={t_fixed}, t_stepnum_multiplier={t_stepnum_multiplier}")
+    print(f"  comp_tol={comp_tol}, comp_delta={comp_delta}, l1_smooth_eps={l1_smooth_eps}")
 
     # Paths
     time_path = f"synth/integration_times/{time_file}"
@@ -75,7 +87,7 @@ def main():
 
     A = np.loadtxt(f"{interactions_path}A.csv", delimiter=",")
     r = np.loadtxt(f"{interactions_path}r.csv", delimiter=",")
-    fitness_fn = lambda x: x @ A + r  # x here is abundance vector N
+    fitness_fn = lambda x: x @ A + r  # x here is abundance vector N (column-oriented A)
 
     # ---- Physical time grid (from CSV) ----
     t = np.loadtxt(time_path, delimiter=",")
@@ -83,16 +95,16 @@ def main():
         raise ValueError("Time grid must be strictly increasing.")
     finaltime = float(t[-1])
 
-    # Export indices (log-spaced for readability)
+    # Export indices (log-spaced) in physical time
     t_export_target = log_time(finaltime, export_steps)
     export_indices = [int(np.argmin(np.abs(t - target))) for target in t_export_target]
 
-    # ---- Hofbauer τ grid (evenly spaced) ----
-    n_steps_phys = len(t) - 1
-    n_steps_tau = max(1, int(round(n_steps_phys * t_stepnum_multiplier)))
-    tau = np.linspace(0.0, t_fixed, n_steps_tau + 1)
+    # ---- Hofbauer τ export targets ----
     tau_export_target = log_time(t_fixed, export_steps)
-    tau_export_indices = [int(np.argmin(np.abs(tau - target))) for target in tau_export_target]
+
+    # Determine fixed number of τ steps (K)
+    n_steps_phys = len(t) - 1
+    K = max(1, int(round(n_steps_phys * t_stepnum_multiplier)))
 
     # Input data
     x0_data = pd.read_csv(input_file, header=None).values
@@ -106,7 +118,7 @@ def main():
     out_path = f"synth/_data/{num_otus}/{output_id}/"
     out_path_and_prefix = f"{out_path}/{output_id}"
 
-    # Hofbauer replicator outputs — different folder, SAME file names/columns
+    # Hofbauer replicator outputs — different folder, SAME basenames/columns
     hof_folder = f"synth/simulate/debug/{num_otus}/{interactions}-Hof/"
     hof_out_folder = f"synth/_data/{num_otus}/{interactions}-Hof/"
     hof_out_prefix = f"{hof_out_folder}/{output_id}"  # keep same base filename pattern
@@ -116,7 +128,7 @@ def main():
     os.makedirs(hof_folder, exist_ok=True)
     os.makedirs(hof_out_folder, exist_ok=True)
 
-    # File names (identical basenames in each folder)
+    # File names
     # Physical (gLV)
     output_file = f"{debug_path}data_{chunk_id}.csv"
     fitness_file = f"{debug_path}fitness_{chunk_id}.csv"
@@ -124,18 +136,26 @@ def main():
     final_file = f"{out_path_and_prefix}_y_{chunk_id}.csv"
 
     # Hofbauer (replicator) in separate folder; same basenames/columns
+    # Primary (now export at PHYSICAL time targets)
     output_file_hof = f"{hof_folder}data_{chunk_id}.csv"
     fitness_file_hof = f"{hof_folder}fitness_{chunk_id}.csv"
     norm_file_hof = f"{hof_folder}normed_{chunk_id}.csv"
+    # Alternate τ-based exports (prefixed with 'tau-')
+    output_file_hof_tau = f"{hof_folder}tau-data_{chunk_id}.csv"
+    fitness_file_hof_tau = f"{hof_folder}tau-fitness_{chunk_id}.csv"
+    norm_file_hof_tau = f"{hof_folder}tau-normed_{chunk_id}.csv"
+
     final_file_hof = f"{hof_out_prefix}_y_{chunk_id}.csv"
 
     # Clear outputs
     for p in [output_file, fitness_file, norm_file, final_file,
-              output_file_hof, fitness_file_hof, norm_file_hof, final_file_hof]:
+              output_file_hof, fitness_file_hof, norm_file_hof,
+              output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
+              final_file_hof]:
         open(p, 'w').close()
 
     # Build Hofbauer payoff matrix M (size (S+1)x(S+1)):
-    # row 0 is all zeros; M[i,0]=r_i (i>0); M[i,j]=A_{ij} for i>0,j>0
+    # row 0 is all zeros; M[i,0]=r_i (i>0); M[i,j]=A_{j,i} so that fitness_fn = x @ A + r matches
     M = build_hofbauer_payoff(A, r)
 
     # ---- Run both simulations per sample ----
@@ -148,7 +168,6 @@ def main():
 
         # ===== gLV (physical) on CSV grid =====
         N_traj = integrate_glv_heun(fitness_fn, N0, t)
-        # Debug export (physical)
         export_block(debug_path, output_file, fitness_file, norm_file,
                      sample_idx=i, times=t[export_indices],
                      states=N_traj[export_indices], fitness_fn=fitness_fn,
@@ -159,16 +178,30 @@ def main():
         x_final = normalize_comp(N_final)
         pd.DataFrame(x_final.reshape(1, num_otus)).to_csv(final_file, mode='a', index=False, header=None)
 
-        # ===== Hofbauer (replicator, uncorrected) on τ-grid =====
-        # Map initial N0 -> augmented y on simplex
+        # ===== Hofbauer (replicator, composition-only adaptive τ) =====
         y0 = N_to_y(N0)
-        y_traj = integrate_replicator_heun(y0, tau, M)
-        # For debug outputs we keep SAME columns as gLV: 'time', 'sample', and 256 species values (abundances).
-        # Reconstruct abundances N from y via N_i = y_i / y_0
-        N_hof_dbg = y_to_N(y_traj[tau_export_indices])
+        y_traj, tau_times, tphys_times = integrate_replicator_comp_adaptive(
+            y0=y0, M=M, fitness_fn=fitness_fn,
+            tau_fixed=t_fixed, K=K,
+            comp_tol=comp_tol, comp_delta=comp_delta, l1_smooth_eps=l1_smooth_eps
+        )
+
+        # Build abundance trajectories for interpolation
+        tau_times = np.asarray(tau_times)
+        tphys_times = np.asarray(tphys_times)
+        N_hof_traj = y_to_N(y_traj)                      # (Tτ, S)
+
+        # --- Primary debug exports at PHYSICAL time targets (consistent across samples)
+        N_hof_dbg_t = interp_traj(tphys_times, N_hof_traj, t_export_target)
         export_block(hof_folder, output_file_hof, fitness_file_hof, norm_file_hof,
-                     sample_idx=i, times=tau[tau_export_indices],  # keep column name 'time'
-                     states=N_hof_dbg, fitness_fn=fitness_fn, num_otus=num_otus)
+                     sample_idx=i, times=t_export_target,  # 'time' = physical time
+                     states=N_hof_dbg_t, fitness_fn=fitness_fn, num_otus=num_otus)
+
+        # --- Alternate τ-based debug exports (prefixed 'tau-')
+        N_hof_dbg_tau = interp_traj(tau_times, N_hof_traj, tau_export_target)
+        export_block(hof_folder, output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
+                     sample_idx=i, times=tau_export_target,  # 'time' = τ
+                     states=N_hof_dbg_tau, fitness_fn=fitness_fn, num_otus=num_otus)
 
         # Final normalized composition from y: x = y_{1:}/(1 - y0)
         y_final = y_traj[-1]
@@ -204,9 +237,8 @@ def build_hofbauer_payoff(A, r):
     """Construct (S+1)x(S+1) payoff matrix M for Hofbauer embedding."""
     S = A.shape[0]
     M = np.zeros((S+1, S+1), dtype=np.float64)
-    M[1:, 0]  = r        # intrinsic rates via column 0
-    M[1:, 1:] = A.T      # <<< use the TRANSPOSE to match fitness_fn = x @ A + r
-    # row 0 remains zeros
+    M[1:, 0]  = r
+    M[1:, 1:] = A.T   # transpose to match fitness_fn = x @ A + r
     return M
 
 def replicator_rhs(y, M):
@@ -215,26 +247,61 @@ def replicator_rhs(y, M):
     phi = float(y @ p)
     return y * (p - phi)
 
-def integrate_replicator_heun(y0, tau, M, clip_min=1e-18):
-    """Heun on τ-grid for replicator; renormalize to simplex after each step for robustness."""
+def integrate_replicator_comp_adaptive(y0, M, fitness_fn, tau_fixed, K,
+                                       comp_tol=1e-2, comp_delta=1.0, l1_smooth_eps=1e-8,
+                                       clip_min=1e-18, tiny=1e-12):
+    """
+    Replicator with composition-only adaptive τ step size (no Hofbauer 1/(1+B), no EMA/clamps).
+    - Fixed step count K; nominal step dtau0 = tau_fixed / K
+    - Per-step dtau_k = dtau0 * (comp_tol / (||x*(f-phi)||_{1,sm} + tiny))**comp_delta
+    Returns:
+      y_traj       : (K+1, S+1)
+      tau_times    : (K+1,) cumulative τ (starts at 0)
+      tphys_times  : (K+1,) cumulative physical time via dt ≈ 0.5*(y0_k + y0_{k+1})*dτ
+    """
     y = np.array(y0, dtype=np.float64)
     ys = [y.copy()]
-    for k in range(1, len(tau)):
-        dtau = float(tau[k] - tau[k-1])
+    tau_times = [0.0]
+    tphys_times = [0.0]
+    dtau0 = float(tau_fixed) / float(K)
+
+    for _ in range(K):
+        # Composition drift speed from implied abundances
+        y0slot = max(y[0], clip_min)
+        N = y[1:] / y0slot
+        Bsum = max(N.sum(), tiny)
+        x = N / Bsum
+        f = fitness_fn(N)                 # orientation consistent with A.T in M
+        phi = float((x * f).sum())
+        v = x * (f - phi)
+        v_norm = np.sum(np.sqrt(v * v + l1_smooth_eps * l1_smooth_eps))
+
+        dtau = dtau0 * (comp_tol / (v_norm + tiny))**comp_delta
+
+        # Heun step in τ (pure replicator)
         f0 = replicator_rhs(y, M)
         y_pred = y + dtau * f0
         y_pred = project_simplex_clip(y_pred, clip_min)
         f1 = replicator_rhs(y_pred, M)
-        y = y + 0.5 * dtau * (f0 + f1)
-        y = project_simplex_clip(y, clip_min)
+        y_new = y + 0.5 * dtau * (f0 + f1)
+        y_new = project_simplex_clip(y_new, clip_min)
+
+        # accumulate τ and physical t (dt = y0 * dτ; trapezoid in y0)
+        y0_old = max(y[0], clip_min)
+        y0_new = max(y_new[0], clip_min)
+        dt_phys = 0.5 * (y0_old + y0_new) * dtau
+
+        y = y_new
         ys.append(y.copy())
-    return np.stack(ys, axis=0)
+        tau_times.append(tau_times[-1] + dtau)
+        tphys_times.append(tphys_times[-1] + dt_phys)
+
+    return np.stack(ys, axis=0), np.array(tau_times, dtype=np.float64), np.array(tphys_times, dtype=np.float64)
 
 def project_simplex_clip(y, clip_min):
     y = np.maximum(y, 0.0)
     s = y.sum()
     if s <= 0:
-        # if all zero due to numerical issues, reset to uniform
         y = np.ones_like(y) / len(y)
     else:
         y = y / s
@@ -311,6 +378,23 @@ def export_block(folder, data_file, fit_file, norm_file, sample_idx, times, stat
     df.insert(0, 'time', times)
     df.insert(0, 'sample', sample_idx)
     df.to_csv(norm_file, mode='a', index=False, header=not os.path.getsize(norm_file))
+
+def interp_traj(times, states, targets):
+    """
+    Linearly interpolate a trajectory to target times.
+    times:   (T,), strictly increasing
+    states:  (T, S)
+    targets: (K,)
+    returns: (K, S)
+    """
+    times = np.asarray(times, dtype=float)
+    states = np.asarray(states, dtype=float)
+    targets = np.asarray(targets, dtype=float)
+    K, S = len(targets), states.shape[1]
+    out = np.empty((K, S), dtype=float)
+    for j in range(S):
+        out[:, j] = np.interp(targets, times, states[:, j])
+    return out
 
 def log_time(finaltime, eval_steps):
     if eval_steps < 2:

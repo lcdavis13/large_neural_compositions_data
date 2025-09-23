@@ -9,7 +9,7 @@ def main():
     num_otus = 256
     interactions = "random-3"
     assemblages_type = "x0"
-    time_file = "t.csv"
+    time_file = "t_dense.csv"
     chunk_id = "0"
     samples = 100
     export_steps = 13  # unused (kept for CLI compatibility)

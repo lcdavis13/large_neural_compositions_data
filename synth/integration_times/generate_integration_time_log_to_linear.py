@@ -4,10 +4,10 @@ from scipy.optimize import root_scalar
 
 
 def main():
-    finaltime = 1000 # final time for the simulation (excluding the extra convergence time)
-    eval_steps = 5000 # these will be spaced in a more complex way to ensure extra precision in early steps without losing too much precision in later steps, see initial_stepsize and log_to_linear_time function for details
-    initial_stepsize = 0.003 # to ensure precision in the crucial early evaluation steps, it will start with this time difference per step and exponentially increase it until it reaches a stepsize that would take it to finaltime in equal linear steps, at which point it switches to linear steps. The reason to not just continue exponentially increasing stepsize is that there is some maximum stepsize beyond which even a fully stabilized, converged system will become unstable again. Note that certain values of this will make it impossible to reach the target finaltime at the target eval_steps, in which case a warning will be thrown.
-    extra_convergence_evaltime = finaltime + 100  # Because you may want to tune the timing/stepping parameters with a smaller finaltime until you find good converging parameters, then make sure that it remains stable for a longer time, you can use this to not retune the timestep parameters for your longer convergence test. It will just continue using the linear timesteps log_to_linear_time for as long as necessary to reach this final extra convergence time.
+    finaltime = 50 # final time for the simulation (excluding the extra convergence time)
+    eval_steps = 200 # these will be spaced in a more complex way to ensure extra precision in early steps without losing too much precision in later steps, see initial_stepsize and log_to_linear_time function for details
+    initial_stepsize = 0.03 # to ensure precision in the crucial early evaluation steps, it will start with this time difference per step and exponentially increase it until it reaches a stepsize that would take it to finaltime in equal linear steps, at which point it switches to linear steps. The reason to not just continue exponentially increasing stepsize is that there is some maximum stepsize beyond which even a fully stabilized, converged system will become unstable again. Note that certain values of this will make it impossible to reach the target finaltime at the target eval_steps, in which case a warning will be thrown.
+    extra_convergence_evaltime = finaltime + 50  # Because you may want to tune the timing/stepping parameters with a smaller finaltime until you find good converging parameters, then make sure that it remains stable for a longer time, you can use this to not retune the timestep parameters for your longer convergence test. It will just continue using the linear timesteps log_to_linear_time for as long as necessary to reach this final extra convergence time.
     
     out_path = "synth/integration_times/t_dense.csv"
 
