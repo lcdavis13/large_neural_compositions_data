@@ -15,7 +15,7 @@ def main():
     export_steps = 13
 
     # Hofbauer grid controls
-    t_fixed_default = 4000.0
+    t_fixed_default = 3500.0
     t_stepnum_multiplier_default = 10.0
 
     parser = argparse.ArgumentParser(
@@ -204,9 +204,9 @@ def build_hofbauer_payoff(A, r):
     """Construct (S+1)x(S+1) payoff matrix M for Hofbauer embedding."""
     S = A.shape[0]
     M = np.zeros((S+1, S+1), dtype=np.float64)
-    M[1:, 0] = r        # intrinsic rates via column 0
-    M[1:, 1:] = A       # interactions
-    # row 0 left as zeros
+    M[1:, 0]  = r        # intrinsic rates via column 0
+    M[1:, 1:] = A.T      # <<< use the TRANSPOSE to match fitness_fn = x @ A + r
+    # row 0 remains zeros
     return M
 
 def replicator_rhs(y, M):

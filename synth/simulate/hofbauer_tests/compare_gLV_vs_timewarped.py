@@ -23,7 +23,7 @@ def main():
     export_steps = 13
 
     # NEW: defaults for Hofbauer-like (virtual time) integration
-    t_fixed_default = 4.0
+    t_fixed_default = 3500.0
     t_stepnum_multiplier_default = 10.0
     warp_variant_default = "one_plus_B"  # choices: "one_plus_B" (dτ=dt/(1+B)) or "B" (dτ=dt/B)
 
@@ -278,7 +278,9 @@ def safe_gLV_tau_ode(tau, x, fitness_fn, warned_flag, replicator_normalize, warp
         else:
             B = max(B, epsB)
 
-    dxd_tau = B * base  # multiply by g(B)
+    # dxd_tau = B * base  # multiply by g(B)
+    speed = 1.0 / (1.0 + B) if warp_variant == "one_plus_B" else 1.0 / B
+    dxd_tau = speed * base 
     if not np.all(np.isfinite(dxd_tau)):
         raise ValueError(f"[τ-ODE] Non-finite derivative at τ={tau}: {dxd_tau}")
     return dxd_tau

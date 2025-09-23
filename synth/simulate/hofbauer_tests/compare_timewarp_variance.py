@@ -200,11 +200,11 @@ def cumulative_tau(t, B, warp_variant="one_plus_B"):
     """
     t = np.asarray(t); B = np.asarray(B, dtype=float)
     if warp_variant == "one_plus_B":
-        integrand = 1.0 / (1.0 + np.maximum(B, 0.0))
+        integrand = 1.0 + np.maximum(B, 0.0)
     else:
         # avoid division by zero by flooring B
         eps = 1e-12
-        integrand = 1.0 / np.maximum(B, eps)
+        integrand = np.maximum(B, eps)
     dt = np.diff(t)
     incr = 0.5 * (integrand[:-1] + integrand[1:]) * dt
     return np.concatenate([[0.0], np.cumsum(incr)])
