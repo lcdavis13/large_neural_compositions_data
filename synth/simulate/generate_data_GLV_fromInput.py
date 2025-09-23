@@ -14,7 +14,7 @@ def main():
     num_otus = 256
     # replicator_normalization = False
     replicator_normalization = False
-    interactions = "random-1"
+    interactions = "random-3"
     # interactions = "cnode1-1k"
     # interactions = "cnode1-100k"
     assemblages_type = "x0"  # should be the prefix of the chunk file names

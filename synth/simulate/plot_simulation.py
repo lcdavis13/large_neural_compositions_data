@@ -6,8 +6,13 @@ import os
 
 
 otu_num = 256
-proj = f"{otu_num}/random-1-RepHeun"
+# proj = f"{otu_num}/random-3-gLV"
+# proj = f"{otu_num}/random-3-gLV-HofTW"
+proj = f"{otu_num}/random-3-Hof"
+# proj = f"{otu_num}/random-1-RepHeun"
 # proj = f"{otu_num}/random-1-RepDEQ"
+# proj = f"{otu_num}/random-0-gLVHeun"
+# proj = f"{otu_num}/random-0-gLVDEQ"
 # proj = f"{otu_num}/random-1-gLV"
 # proj = f"{otu_num}/random-1-Rep"
 # proj = f"{otu_num}/random-weak-Rep"
@@ -35,6 +40,9 @@ num_otus = 256
 data_file = f'{inpath}data_0.csv'
 normed_file = f'{inpath}normed_0.csv'
 fitness_file = f'{inpath}fitness_0.csv'
+residual_file = f'{inpath}residual_0.csv'
+spectral_file = f'{inpath}spec-abscissa_0.csv'
+numerical_file = f'{inpath}num-abscissa_0.csv'
 
 
 
@@ -144,6 +152,28 @@ def plot_ridge(data, title):
     plt.show()
 
 
+def plot_mag_over_time(data_filename, title, logscale):
+    df = pd.read_csv(data_filename, header=0)
+
+    # Get only feature columns
+    feature_cols = [col for col in df.columns if col not in ['sample', 'time']]
+    feature = feature_cols[0]  # assuming there's at least one feature column
+
+    # Plot
+    plt.figure(figsize=(10, 4))
+    sns.lineplot(data=df, x='time', y=feature, marker='o')
+    plt.title(title)
+    plt.xlabel('Time')
+    if logscale:
+        plt.ylabel('Feature (logscale)')
+        plt.yscale('log')
+    else:
+        plt.ylabel('Feature')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_sum_mags_over_time(data_filename, title, logscale):
     df = pd.read_csv(data_filename, header=0)
 
@@ -189,4 +219,8 @@ plot_sum_mags_over_time(data_file, 'Absolute Abundance L1 vs Time', logscale=Fal
 
 plot_sum_mags_over_time(fitness_file, 'Growth Rate L1 vs Time', logscale=True)
 
+# plot_sum_mags_over_time(residual_file, 'Residual L1 vs Time', logscale=True)
 
+# plot_mag_over_time(spectral_file, 'Spectral Abscissa vs Time', logscale=False)
+
+# plot_mag_over_time(numerical_file, 'Numerical Abscissa vs Time', logscale=False)
