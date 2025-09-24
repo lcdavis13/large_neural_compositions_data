@@ -40,6 +40,7 @@ num_otus = 256
 data_file = f'{inpath}data_0.csv'
 normed_file = f'{inpath}normed_0.csv'
 fitness_file = f'{inpath}fitness_0.csv'
+compderiv_file = f'{inpath}compderiv_0.csv'
 residual_file = f'{inpath}residual_0.csv'
 spectral_file = f'{inpath}spec-abscissa_0.csv'
 numerical_file = f'{inpath}num-abscissa_0.csv'
@@ -147,7 +148,7 @@ def plot_ridge(data, title):
             break
 
     plt.suptitle(title, fontsize=16)
-    plt.tight_layout(h_pad=-1)
+    plt.tight_layout(h_pad=0)
     plt.subplots_adjust(top=0.95)
     plt.show()
 
@@ -165,10 +166,10 @@ def plot_mag_over_time(data_filename, title, logscale):
     plt.title(title)
     plt.xlabel('Time')
     if logscale:
-        plt.ylabel('Feature (logscale)')
+        plt.ylabel('(logscale)')
         plt.yscale('log')
     else:
-        plt.ylabel('Feature')
+        plt.ylabel('')
     plt.grid(True)
     plt.tight_layout()
     plt.show()
@@ -218,6 +219,8 @@ for file, title in zip(ridge_files, titles):
 plot_sum_mags_over_time(data_file, 'Absolute Abundance L1 vs Time', logscale=False)
 
 plot_sum_mags_over_time(fitness_file, 'Growth Rate L1 vs Time', logscale=True)
+
+plot_mag_over_time(compderiv_file, 'Compositional Change vs Time', logscale=False)
 
 # plot_sum_mags_over_time(residual_file, 'Residual L1 vs Time', logscale=True)
 

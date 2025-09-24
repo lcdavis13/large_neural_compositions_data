@@ -22,7 +22,7 @@ def parse_args():
     p.add_argument("--warp_variant", type=str, default="one_plus_B", choices=["one_plus_B","B"])
 
     # grid density in τ (must match integrator)
-    p.add_argument("--K", type=int, default=500, help="Number of HofTW steps.")
+    p.add_argument("--K", type=int, default=300, help="Number of HofTW steps.")
 
     # how to aggregate τ(T) from gLV into a single tau_fixed
     p.add_argument("--tau_choice", type=str, default="mean", choices=["mean","median","min","max","quantile","value"])
@@ -31,7 +31,7 @@ def parse_args():
 
     # composition-adaptive params (must match integrator)
     p.add_argument("--comp_tol", type=float, default=1e-2)
-    p.add_argument("--comp_delta", type=float, default=0.25) #1.0)
+    p.add_argument("--comp_delta", type=float, default=0.5) #1.0)
     p.add_argument("--l1_smooth_eps", type=float, default=1e-8)
 
     # alpha bisection controls
