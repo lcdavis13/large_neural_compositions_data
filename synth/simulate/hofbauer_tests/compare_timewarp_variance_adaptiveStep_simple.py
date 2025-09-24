@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import argparse, os
+from hofbauer_dynamic_steps import DynamicTauStepper
 
 # -------------------- CLI -------------------- #
 
@@ -98,61 +99,6 @@ def cumulative_tau_from_glv(t, traj, warp_variant="one_plus_B"):
     incr = 0.5 * (integrand[:-1] + integrand[1:]) * dt
     return np.concatenate([[0.0], np.cumsum(incr)])
 
-# -------- HofTW integrator for CALIBRATION (no last-value overwrite) -------- #
-
-def glv_tau_comp_adaptive_CALIB(
-    fitness_fn, N0, tau_fixed, K, warp_variant="one_plus_B",
-    comp_tol=1e-2, comp_delta=1.0, l1_smooth_eps=1e-8, tau_scale_alpha=1.0,
-    clip_min=1e-10, clip_max=1e8, tiny=1e-12
-):
-    """
-    Identical stepping to your integrator, BUT:
-      - returns true tau_spent (no forcing tau_times[-1] = tau_fixed)
-      - no padding after early stop (faster; not needed for calibration)
-    """
-    N = np.array(N0, dtype=np.float64)
-    N[N < 0] = 0
-    tau_accum = 0.0
-    t_phys = 0.0
-
-    dtau0 = float(tau_fixed) / float(K)
-
-    for _ in range(K):
-        Nc = np.where(N == 0, 0, np.clip(N, clip_min, clip_max))
-        B  = float(np.sum(Nc))
-        g  = (1.0 + B) if warp_variant == "one_plus_B" else max(B, tiny)
-
-        x   = Nc / max(B, tiny)
-        f   = fitness_fn(Nc)
-        phi = float((x * f).sum())
-        v   = x * (f - phi)
-        v_norm = np.sum(np.sqrt(v * v + l1_smooth_eps * l1_smooth_eps))
-
-        dtau = dtau0 * tau_scale_alpha * (comp_tol / (v_norm + tiny))**comp_delta
-        rem_tau = tau_fixed - tau_accum
-        if dtau > rem_tau:
-            dtau = rem_tau
-
-        # Heun in τ (same as your integrator)
-        rhs0 = g * (Nc * f)
-        Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
-        Bp   = float(np.sum(Np))
-        gp   = (1.0 + Bp) if warp_variant == "one_plus_B" else max(Bp, tiny)
-        fp   = fitness_fn(Np)
-        rhsp = gp * (Np * fp)
-        N_new = N + 0.5 * dtau * (rhs0 + rhsp)
-        N_new[N_new < 0] = 0
-
-        # physical time increment
-        t_phys += 0.5 * (g + gp) * dtau
-        tau_accum += dtau
-        N = N_new
-
-        if rem_tau - dtau <= 1e-15:
-            break
-
-    return tau_accum, t_phys  # true τ spent and achieved physical T
-
 # -------------------- Calibration -------------------- #
 
 def aggregate(values, mode="mean", q=0.5, value=None):
@@ -199,11 +145,18 @@ def calibrate_alpha_for_tau_budget(
     This directly fixes the under-run that produced tiny T_phys.
     """
     def tau_spent(alpha):
-        tau_used, _ = glv_tau_comp_adaptive_CALIB(
-            fitness_fn, N0, tau_fixed, K, warp_variant,
-            comp_tol, comp_delta, l1_smooth_eps, alpha
+        stepper = DynamicTauStepper(
+            fitness_fn,
+            warp_variant=warp_variant,
+            comp_tol=comp_tol,
+            comp_delta=comp_delta,
+            l1_smooth_eps=l1_smooth_eps,
+            tau_scale_alpha=alpha,
         )
-        return tau_used
+        used, _T = stepper.integrate(
+            N0, tau_fixed=tau_fixed, K=K, return_mode="calib"
+        )
+        return used
 
     lo, hi = float(alpha_lo), float(alpha_hi)
 
@@ -269,19 +222,31 @@ def main():
 
     # 3) Optional check: achieved physical time across a few samples
     if args.print_stats or args.report_n > 0:
+        stepper = DynamicTauStepper(
+            fitness_fn,
+            warp_variant=args.warp_variant,
+            comp_tol=args.comp_tol,
+            comp_delta=args.comp_delta,
+            l1_smooth_eps=args.l1_smooth_eps,
+            tau_scale_alpha=alpha,   # use calibrated alpha here
+        )
+
         nrep = min(args.report_n, len(x0_all))
         T_list = []
         for j in range(nrep):
-            tau_used, T_end = glv_tau_comp_adaptive_CALIB(
-                fitness_fn, x0_all[j], tau_fixed, K, args.warp_variant,
-                args.comp_tol, args.comp_delta, args.l1_smooth_eps, alpha
+            tau_used, T_end = stepper.integrate(
+                N0=x0_all[j],
+                tau_fixed=tau_fixed,
+                K=K,
+                return_mode="calib"   # identical dynamic stepping, no padding
             )
             T_list.append(T_end)
+
         T_arr = np.array(T_list, dtype=float)
         print(f"Achieved T_phys across {nrep} samples: "
-              f"mean={T_arr.mean():.6g}, std={T_arr.std():.6g}, "
-              f"min={T_arr.min():.6g}, max={T_arr.max():.6g}")
-
+            f"mean={T_arr.mean():.6g}, std={T_arr.std():.6g}, "
+            f"min={T_arr.min():.6g}, max={T_arr.max():.6g}")
+    
     # 4) Final outputs to paste into the integrator
     print("\n# === Calibrated parameters (paste into your integrator) ===")
     print(f"tau_fixed  = {tau_fixed:.6g}")

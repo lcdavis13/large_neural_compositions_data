@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import argparse
 import warnings
+from hofbauer_dynamic_steps import DynamicTauStepper
 
 
 def main():
@@ -284,120 +285,6 @@ def safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize,
     return dxdt
 
 
-# ---------- gLV-in-τ with composition-only adaptive step size ---------- #
-def glv_tau_comp_adaptive(
-    fitness_fn, N0, tau_fixed, K, warp_variant="one_plus_B",
-    comp_tol=1e-2, comp_delta=1.0, l1_smooth_eps=1e-8, tau_scale_alpha=1.0,
-    T_post=None, K_post=0,
-    clip_min=1e-10, clip_max=1e8, tiny=1e-12
-):
-    """
-    HofTW τ-integration with composition-adaptive dτ.
-
-    Phase A (τ-budget): up to K steps with cumulative τ reaching tau_fixed (uses budget guard).
-    Phase B (post-τ): up to K_post extra steps ignoring the τ budget, continuing until physical
-                      time reaches T_post (if provided).  No padding here; we pad/truncate later.
-    """
-    N = np.array(N0, dtype=np.float64)
-    N[N < 0] = 0
-
-    Ns = [N.copy()]
-    tau_times = [0.0]
-    tphys_times = [0.0]
-
-    dtau0 = float(tau_fixed) / float(max(1, K))
-    tau_accum = 0.0
-
-    # ---------- Phase A: τ-budget (up to K steps) ----------
-    for _ in range(K):
-        Nc = np.where(N == 0, 0, np.clip(N, clip_min, clip_max))
-        B  = float(np.sum(Nc))
-        g  = (1.0 + B) if warp_variant == "one_plus_B" else max(B, tiny)
-
-        # composition drift (smoothed-L1 of replicator velocity)
-        x   = Nc / max(B, tiny)
-        f   = fitness_fn(Nc)
-        phi = float((x * f).sum())
-        v   = x * (f - phi)
-        v_norm = np.sum(np.sqrt(v * v + l1_smooth_eps * l1_smooth_eps))
-
-        dtau = dtau0 * tau_scale_alpha * (comp_tol / (v_norm + tiny))**comp_delta
-        rem_tau = tau_fixed - tau_accum
-        if dtau > rem_tau:
-            dtau = rem_tau
-
-        # Heun in τ
-        rhs0 = g * (Nc * f)
-        Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
-        Bp   = float(np.sum(Np))
-        gp   = (1.0 + Bp) if warp_variant == "one_plus_B" else max(Bp, tiny)
-        fp   = fitness_fn(Np)
-        rhsp = gp * (Np * fp)
-
-        N_new   = N + 0.5 * dtau * (rhs0 + rhsp)
-        N_new[N_new < 0] = 0
-        dt_phys = 0.5 * (g + gp) * dtau
-
-        N = N_new
-        tau_accum += dtau
-        Ns.append(N.copy())
-        tau_times.append(tau_accum)
-        tphys_times.append(tphys_times[-1] + dt_phys)
-
-        if rem_tau - dtau <= 1e-15:
-            break  # τ budget exactly exhausted
-
-    # ---------- Phase B: post-τ continuation (up to K_post steps) ----------
-    for _ in range(max(0, K_post)):
-        if T_post is not None and tphys_times[-1] >= T_post - 1e-15:
-            break
-
-        Nc = np.where(N == 0, 0, np.clip(N, clip_min, clip_max))
-        B  = float(np.sum(Nc))
-        g  = (1.0 + B) if warp_variant == "one_plus_B" else max(B, tiny)
-
-        x   = Nc / max(B, tiny)
-        f   = fitness_fn(Nc)
-        phi = float((x * f).sum())
-        v   = x * (f - phi)
-        v_norm = np.sum(np.sqrt(v * v + l1_smooth_eps * l1_smooth_eps))
-
-        dtau = dtau0 * tau_scale_alpha * (comp_tol / (v_norm + tiny))**comp_delta
-
-        # predictor to estimate dt_phys and cap to hit T_post exactly if needed
-        rhs0 = g * (Nc * f)
-        Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
-        Bp   = float(np.sum(Np))
-        gp   = (1.0 + Bp) if warp_variant == "one_plus_B" else max(Bp, tiny)
-        fp   = fitness_fn(Np)
-        rhsp = gp * (Np * fp)
-        dt_phys = 0.5 * (g + gp) * dtau
-
-        if T_post is not None and (tphys_times[-1] + dt_phys) > T_post:
-            s = max(0.0, (T_post - tphys_times[-1]) / (dt_phys + tiny))
-            dtau *= s
-            # recompute one-step with scaled dtau
-            Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
-            Bp   = float(np.sum(Np))
-            gp   = (1.0 + Bp) if warp_variant == "one_plus_B" else max(Bp, tiny)
-            fp   = fitness_fn(Np)
-            rhsp = gp * (Np * fp)
-            dt_phys = 0.5 * (g + gp) * dtau
-
-        N_new   = N + 0.5 * dtau * (rhs0 + rhsp)
-        N_new[N_new < 0] = 0
-
-        N = N_new
-        Ns.append(N.copy())
-        tau_times.append(tau_times[-1] + dtau)
-        tphys_times.append(tphys_times[-1] + dt_phys)
-
-    # finalize arrays (no padding here)
-    Ns = np.stack(Ns, axis=0)
-    tau_times = np.asarray(tau_times, dtype=np.float64)
-    tphys_times = np.asarray(tphys_times, dtype=np.float64)
-    return Ns, tau_times, tphys_times
-
 
 def gLV(fitness_fn, x_0, t, replicator_normalize):
     warned_flag = {"low_warned": False, "high_warned": False}
@@ -535,19 +422,24 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file
 
         # ===== HofTW: run and cache =====
         if (K is not None) and (tau_fixed is not None):
-            N_traj_tau, tau_times, tphys_times = glv_tau_comp_adaptive(
-                fitness_fn=fitness_fn,
-                N0=x_0,
-                tau_fixed=tau_fixed,
-                K=K,
+            stepper = DynamicTauStepper(
+                fitness_fn,
                 warp_variant=warp_variant,
                 comp_tol=comp_tol,
                 comp_delta=comp_delta,
                 l1_smooth_eps=l1_smooth_eps,
                 tau_scale_alpha=tau_scale_alpha,
-                T_post=T_post,
-                K_post=K_post,
             )
+
+            N_traj_tau, tau_times, tphys_times = stepper.integrate(
+                N0=x_0,
+                tau_fixed=tau_fixed,
+                K=K,
+                T_post=T_post,     # neutral if None
+                K_post=K_post,     # neutral if 0
+                return_mode="traj"
+            )
+
             hof_states.append(N_traj_tau)
             hof_tau_times.append(tau_times)
             hof_tphys_times.append(tphys_times)
