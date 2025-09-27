@@ -1,20 +1,18 @@
 import numpy as np
 import pandas as pd
 import argparse
-import warnings
 import os
 from hofbauer_dynamic_steps import comp_speed_tau, compute_dtau, y_to_N_from_simplex, hof_clock
 
 
 def main():
-    # Defaults (match your formatting)
+    # ----- defaults -----
     num_otus = 256
     interactions = "random-3"
     assemblages_type = "x0"
-    time_file = "t.csv"
     chunk_id = "0"
     samples = 15
-    export_steps = 13 # 15
+    export_steps = 13  # number of log-spaced export slices after alignment
 
     # Hofbauer grid controls
     tau_fixed_default = 5000
@@ -25,27 +23,25 @@ def main():
     comp_tol_default = 1e-2
     l1_smooth_eps_default = 1e-8
 
-    # ----- toggle defaults (edit these to change in-code defaults) -----
+    # toggles
     adaptive_steps_default = True
-    timescale_glv_default = True        
-
+    timescale_glv_default = True
 
     parser = argparse.ArgumentParser(
-        description="Run gLV on physical CSV grid AND actual Hofbauer (uncorrected) using composition-based adaptive τ-steps."
+        description="Run Hofbauer (replicator) dynamics with composition-based adaptive τ-steps."
     )
     parser.add_argument("--num_otus", type=int, default=num_otus)
     parser.add_argument("--interactions", type=str, default=interactions)
     parser.add_argument("--assemblages_types", type=str, default=assemblages_type)
     parser.add_argument("--chunk_id", type=str, default=chunk_id)
     parser.add_argument("--samples", type=int, default=samples)
-    parser.add_argument("--time_file", type=str, default=time_file)
     parser.add_argument("--export_steps", type=int, default=export_steps)
 
     # Hofbauer horizon / step count
     parser.add_argument("--tau_fixed", type=float, default=tau_fixed_default,
                         help="Target virtual (replicator) horizon used to set the nominal step size (actual sum of steps may drift).")
     parser.add_argument("--K", type=int, default=K_default,
-                        help="Fixed number of τ steps to take (nominal step dtau0 = t)")
+                        help="Fixed number of τ steps to take (nominal step dtau0 = tau_fixed/K).")
 
     # Composition-based adaptive step size params (no EMA, no clamps, no budget mixing)
     parser.add_argument("--comp_tol", type=float, default=comp_tol_default,
@@ -54,28 +50,25 @@ def main():
                         help="Exponent for adaptivity; 1.0 is strongest, 0.0 disables adaptivity.")
     parser.add_argument("--l1_smooth_eps", type=float, default=l1_smooth_eps_default,
                         help="Epsilon for smoothed L1 norm sqrt(v^2 + eps^2).")
-    
     parser.add_argument("--tau_scale_alpha", type=float, default=tau_scale_alpha_default,
-                    help="Global scale for adaptive τ step (dtau *= alpha).")
-
+                        help="Global scale for adaptive τ step (dtau *= alpha).")
     parser.add_argument("--warp_variant", type=str, default="one_plus_B",
-                    choices=["one_plus_B", "B"],
-                    help="Clock g = dt/dτ definition.")
+                        choices=["one_plus_B", "B"],
+                        help="Clock g = dt/dτ definition.")
 
-    # ----- adaptive steps on/off (default from variable) -----
+    # adaptive steps on/off
     parser.set_defaults(adaptive_steps=adaptive_steps_default)
     parser.add_argument("--adaptive_steps", dest="adaptive_steps", action="store_true",
                         help=f"Enable adaptive τ steps (default: {adaptive_steps_default}).")
     parser.add_argument("--no_adaptive_steps", dest="adaptive_steps", action="store_false",
                         help=f"Disable adaptive τ steps (default: {adaptive_steps_default}).")
 
-    # ----- timescale correction on/off (default from variable) -----
+    # timescale correction on/off
     parser.set_defaults(timescale_correction=timescale_glv_default)
     parser.add_argument("--timescale_correction", dest="timescale_correction", action="store_true",
                         help=f"Multiply RHS by clock g (default: {timescale_glv_default}).")
     parser.add_argument("--no_timescale_correction", dest="timescale_correction", action="store_false",
                         help=f"Do not multiply RHS by clock g (default: {timescale_glv_default}).")
-
 
     args = parser.parse_args()
 
@@ -84,7 +77,6 @@ def main():
     assemblages_type = args.assemblages_types
     chunk_id = args.chunk_id
     samples = args.samples
-    time_file = args.time_file
     export_steps = args.export_steps
     tau_fixed = float(args.tau_fixed)
     K = int(args.K)
@@ -96,25 +88,20 @@ def main():
     adaptive_steps = bool(args.adaptive_steps)
     timescale_correction = bool(args.timescale_correction)
 
-
-    print("Running with parameters:")
+    print("Running Hofbauer (replicator) with parameters:")
     print(f"  num_otus: {num_otus}")
     print(f"  interactions: {interactions}")
     print(f"  assemblages_type: {assemblages_type}")
     print(f"  chunk_num: {chunk_id}")
     print(f"  samples: {samples}")
-    print(f"  time_file: {time_file}")
     print(f"  comp_tol={comp_tol}, comp_delta={comp_delta}, l1_smooth_eps={l1_smooth_eps}")
 
     # Paths
-    time_path = f"synth/integration_times/{time_file}"
     interactions_path = f"synth/feature_interactions/{num_otus}/{interactions}/"
     x0_path = f"synth/_data/{num_otus}/{assemblages_type}"
     input_file = f"{x0_path}_{chunk_id}.csv"
 
     # Load data
-    if not os.path.exists(time_path):
-        raise FileNotFoundError(f"Time CSV not found: {time_path}")
     if not os.path.exists(interactions_path):
         raise FileNotFoundError(f"Interactions folder not found: {interactions_path}")
     if not os.path.exists(input_file):
@@ -122,64 +109,25 @@ def main():
 
     A = np.loadtxt(f"{interactions_path}A.csv", delimiter=",")
     r = np.loadtxt(f"{interactions_path}r.csv", delimiter=",")
-    fitness_fn = lambda x: x @ A + r  # x here is abundance vector N (column-oriented A)
+    fitness_fn = lambda x: x @ A + r  # x is abundance vector N (column-oriented A)
 
-    # ---- Physical time grid (from CSV) ----
-    t = np.loadtxt(time_path, delimiter=",")
-    if np.any(np.diff(t) <= 0):
-        raise ValueError("Time grid must be strictly increasing.")
-    finaltime = float(t[-1])
-
-    # Export indices (log-spaced) in physical time
-    t_export_target = log_time(finaltime, export_steps)
-    export_indices = [int(np.argmin(np.abs(t - target))) for target in t_export_target]
-
-    # ---- Hofbauer τ export targets ----
-    tau_export_target = log_time(tau_fixed, export_steps)
-
-    # Determine fixed number of τ steps (K)
-    # n_steps_phys = len(t) - 1
-    # K = max(1, int(round(n_steps_phys * t_stepnum_multiplier)))
-
-    # Input data
-    x0_data = pd.read_csv(input_file, header=None).values
-    total_available = len(x0_data)
-    total_target = total_available if samples is None else min(samples, total_available)
-
-    # ---- Output folders and file names ----
-    # gLV (physical) outputs
-    output_id = f"{interactions}-gLV"
-    debug_path = f"synth/simulate/debug/{num_otus}/{output_id}/"
-    out_path = f"synth/_data/{num_otus}/{output_id}/"
-    out_path_and_prefix = f"{out_path}/{output_id}"
-
-    # Hofbauer replicator outputs — different folder, SAME basenames/columns
+    # Hofbauer replicator outputs — folder & basenames
+    output_id = f"{interactions}-gLV"  # keep same basename pattern as before
     hof_folder = f"synth/simulate/debug/{num_otus}/{interactions}-Hof/"
     hof_out_folder = f"synth/_data/{num_otus}/{interactions}-Hof/"
-    hof_out_prefix = f"{hof_out_folder}/{output_id}"  # keep same base filename pattern
+    hof_out_prefix = f"{hof_out_folder}/{output_id}"
 
-    os.makedirs(debug_path, exist_ok=True)
-    os.makedirs(out_path, exist_ok=True)
     os.makedirs(hof_folder, exist_ok=True)
     os.makedirs(hof_out_folder, exist_ok=True)
 
-    # File names
-    # Physical (gLV)
-    output_file = f"{debug_path}data_{chunk_id}.csv"
-    fitness_file = f"{debug_path}fitness_{chunk_id}.csv"
-    norm_file = f"{debug_path}normed_{chunk_id}.csv"
-    final_file = f"{out_path_and_prefix}_y_{chunk_id}.csv"
-
-    # Hofbauer (replicator) in separate folder; same basenames/columns
-    # Primary (now export at PHYSICAL time targets)
+    # File names (Hofbauer only)
     output_file_hof = f"{hof_folder}data_{chunk_id}.csv"
     fitness_file_hof = f"{hof_folder}fitness_{chunk_id}.csv"
     norm_file_hof = f"{hof_folder}normed_{chunk_id}.csv"
-    
-    tau_steps_file_hof  = f"{hof_folder}tau-time-steps_{chunk_id}.csv"
+
+    tau_steps_file_hof = f"{hof_folder}tau-time-steps_{chunk_id}.csv"
     phys_steps_file_hof = f"{hof_folder}time-steps_{chunk_id}.csv"
-    
-    # Alternate τ-based exports (prefixed with 'tau-')
+
     output_file_hof_tau = f"{hof_folder}tau-data_{chunk_id}.csv"
     fitness_file_hof_tau = f"{hof_folder}tau-fitness_{chunk_id}.csv"
     norm_file_hof_tau = f"{hof_folder}tau-normed_{chunk_id}.csv"
@@ -187,17 +135,21 @@ def main():
     final_file_hof = f"{hof_out_prefix}_y_{chunk_id}.csv"
 
     # Clear outputs
-    for p in [output_file, fitness_file, norm_file, final_file,
-              output_file_hof, fitness_file_hof, norm_file_hof,
-              output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
-              final_file_hof, tau_steps_file_hof, phys_steps_file_hof]:
+    for p in [
+        output_file_hof, fitness_file_hof, norm_file_hof,
+        output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
+        final_file_hof, tau_steps_file_hof, phys_steps_file_hof
+    ]:
         open(p, 'w').close()
 
-    # Build Hofbauer payoff matrix M (size (S+1)x(S+1)):
-    # row 0 is all zeros; M[i,0]=r_i (i>0); M[i,j]=A_{j,i} so that fitness_fn = x @ A + r matches
+    # Build Hofbauer payoff matrix M (size (S+1)x(S+1))
     M = build_hofbauer_payoff(A, r)
 
-    # ---- Run both simulations per sample ----
+    # ---- Run Hofbauer only ----
+    x0_data = pd.read_csv(input_file, header=None).values
+    total_available = len(x0_data)
+    total_target = total_available if samples is None else min(samples, total_available)
+
     progress_interval = 10
     processed = 0
 
@@ -206,24 +158,11 @@ def main():
     hof_tphys_times = []
     hof_sample_ids = []
 
-
     for i, N0 in enumerate(x0_data):
         if samples is not None and i >= samples:
             break
 
-        # ===== gLV (physical) on CSV grid =====
-        N_traj = integrate_glv_heun(fitness_fn, N0, t)
-        export_block(debug_path, output_file, fitness_file, norm_file,
-                     sample_idx=i, times=t[export_indices],
-                     states=N_traj[export_indices], fitness_fn=fitness_fn,
-                     num_otus=num_otus)
-
-        # Final normalized composition (physical)
-        N_final = N_traj[-1]
-        x_final = normalize_comp(N_final)
-        pd.DataFrame(x_final.reshape(1, num_otus)).to_csv(final_file, mode='a', index=False, header=None)
-
-        # ===== Hofbauer (replicator, composition-only adaptive τ) =====
+        # Hofbauer (replicator, composition-only adaptive τ)
         y0 = N_to_y(N0)
         y_traj, tau_times, tphys_times = integrate_replicator_comp_adaptive(
             y0=y0, M=M, fitness_fn=fitness_fn,
@@ -235,7 +174,6 @@ def main():
             comp_tol=comp_tol, comp_delta=comp_delta, l1_smooth_eps=l1_smooth_eps,
         )
 
-
         steps = np.arange(len(tau_times), dtype=int)
         pd.DataFrame({"sample": i, "step": steps, "tau": tau_times}).to_csv(
             tau_steps_file_hof, mode="a", index=False, header=not os.path.getsize(tau_steps_file_hof)
@@ -244,30 +182,12 @@ def main():
             phys_steps_file_hof, mode="a", index=False, header=not os.path.getsize(phys_steps_file_hof)
         )
 
-        # Build abundance trajectories for interpolation
-        tau_times = np.asarray(tau_times)
-        tphys_times = np.asarray(tphys_times)
-        N_hof_traj = y_to_N(y_traj)                      # (Tτ, S)
-
-        # # --- Primary debug exports at PHYSICAL time targets (consistent across samples)
-        # N_hof_dbg_t = interp_traj(tphys_times, N_hof_traj, t_export_target)
-        # export_block(hof_folder, output_file_hof, fitness_file_hof, norm_file_hof,
-        #              sample_idx=i, times=t_export_target,  # 'time' = physical time
-        #              states=N_hof_dbg_t, fitness_fn=fitness_fn, num_otus=num_otus)
-
-        # # --- Alternate τ-based debug exports (prefixed 'tau-')
-        # N_hof_dbg_tau = interp_traj(tau_times, N_hof_traj, tau_export_target)
-        # export_block(hof_folder, output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
-        #              sample_idx=i, times=tau_export_target,  # 'time' = τ
-        #              states=N_hof_dbg_tau, fitness_fn=fitness_fn, num_otus=num_otus)
-
-        # Hofbauer: cache for post-run alignment
+        # Cache trajectories for post-run alignment/exports
         N_hof_traj = y_to_N(y_traj)      # (Tτ, S)
         hof_states.append(N_hof_traj)
         hof_tau_times.append(np.asarray(tau_times))
         hof_tphys_times.append(np.asarray(tphys_times))
         hof_sample_ids.append(i)
-
 
         # Final normalized composition from y: x = y_{1:}/(1 - y0)
         y_final = y_traj[-1]
@@ -280,27 +200,23 @@ def main():
 
     # ----- After all samples: align Hofbauer exports on median physical/τ times -----
     if len(hof_states) > 0:
-        # Median realized length across samples
         lengths = [len(tp) for tp in hof_tphys_times]
         L_med = int(np.median(lengths))
         L_med = max(L_med, 2)
 
-        # Pad/truncate everything to L_med so indices match across samples
-        states_pt = []
-        tau_pt = []
-        tphys_pt = []
+        states_pt, tau_pt, tphys_pt = [], [], []
         for N_traj, ta, tp in zip(hof_states, hof_tau_times, hof_tphys_times):
             states_pt.append(pad_truncate_2d(N_traj, L_med))
             tau_pt.append(pad_truncate_1d(ta, L_med))
             tphys_pt.append(pad_truncate_1d(tp, L_med))
 
-        # Choose export indices (evenly across realized length, like gLV-HofTW)
+        # choose ~evenly spaced indices across realized length
         J = even_index_subset(L_med, export_steps)
 
-        # Median *computed* times at those indices
-        t_matrix   = np.stack([tp[J] for tp in tphys_pt], axis=0)
+        # median computed times at those indices
+        t_matrix = np.stack([tp[J] for tp in tphys_pt], axis=0)
         tau_matrix = np.stack([ta[J] for ta in tau_pt], axis=0)
-        t_export_hof   = np.median(t_matrix, axis=0)
+        t_export_hof = np.median(t_matrix, axis=0)
         tau_export_hof = np.median(tau_matrix, axis=0)
 
         # Export each sample interpolated to median physical and median τ times
@@ -310,15 +226,14 @@ def main():
             # physical-time aligned export
             N_dbg_t = interp_traj(tphys_times_pt, N_traj_pt, t_export_hof)
             export_block(hof_folder, output_file_hof, fitness_file_hof, norm_file_hof,
-                        sample_idx=sid, times=t_export_hof, states=N_dbg_t,
-                        fitness_fn=fitness_fn, num_otus=num_otus)
+                         sample_idx=sid, times=t_export_hof, states=N_dbg_t,
+                         fitness_fn=fitness_fn, num_otus=num_otus)
 
             # τ-time aligned export (tau-*)
             N_dbg_tau = interp_traj(tau_times_pt, N_traj_pt, tau_export_hof)
             export_block(hof_folder, output_file_hof_tau, fitness_file_hof_tau, norm_file_hof_tau,
-                        sample_idx=sid, times=tau_export_hof, states=N_dbg_tau,
-                        fitness_fn=fitness_fn, num_otus=num_otus)
-
+                         sample_idx=sid, times=tau_export_hof, states=N_dbg_tau,
+                         fitness_fn=fitness_fn, num_otus=num_otus)
 
     if (processed % progress_interval) != 0:
         print(f"Completed {processed}/{total_target} samples")
@@ -359,22 +274,6 @@ def pad_truncate_2d(X, L):
     pad = np.repeat(last, L - n, axis=0)
     return np.concatenate([X, pad], axis=0)
 
-
-def integrate_glv_heun(fitness_fn, N0, t, clip_min=1e-10, clip_max=1e8):
-    """Heun on physical grid t for gLV: dN/dt = N ⊙ (r + A N)."""
-    x = np.array(N0, dtype=np.float64)
-    xs = [x.copy()]
-    for k in range(1, len(t)):
-        dt = float(t[k] - t[k-1])
-        x0c = np.where(x == 0, 0, np.clip(x, clip_min, clip_max))
-        f0 = x0c * fitness_fn(x0c)
-        x_pred = np.where(x0c + dt * f0 == 0, 0, np.clip(x0c + dt * f0, clip_min, clip_max))
-        f1 = x_pred * fitness_fn(x_pred)
-        x = x0c + 0.5 * dt * (f0 + f1)
-        x[x < 0] = 0
-        xs.append(x.copy())
-    return np.stack(xs, axis=0)
-
 def build_hofbauer_payoff(A, r):
     """Construct (S+1)x(S+1) payoff matrix M for Hofbauer embedding."""
     S = A.shape[0]
@@ -399,15 +298,10 @@ def integrate_replicator_comp_adaptive(
     clip_min=1e-18, tiny=1e-12
 ):
     """
-    Integrate Hofbauer replicator in an abstract step variable (call it τ).
-    - If timescale_correction=False: state RHS is pure replicator (dy/dτ = R(y)).
-    - If timescale_correction=True : multiply RHS by g (dy/dτ = g * R(y)).
+    Integrate Hofbauer replicator in an abstract step variable (τ).
+    - If timescale_correction=False: dy/dτ = R(y).
+    - If timescale_correction=True : dy/dτ = g * R(y).
     - Physical time bookkeeping is ALWAYS dt = g dτ (trapezoid in g).
-    - Adaptive step sizing:
-        * If enabled: dtau = dtau0 * alpha * (comp_tol / ||dx/dτ||)^comp_delta
-          where ||dx/dτ|| uses g=1 (pure replicator speed) if timescale_correction=False,
-          and g=clock if timescale_correction=True.
-        * If disabled: dtau = min(dtau0 * alpha, remaining_budget).
     """
     def R(y):
         return replicator_rhs(y, M)
@@ -474,7 +368,6 @@ def integrate_replicator_comp_adaptive(
             np.asarray(tau_times, dtype=np.float64),
             np.asarray(tphys_times, dtype=np.float64))
 
-
 def project_simplex_clip(y, clip_min):
     y = np.maximum(y, 0.0)
     s = y.sum()
@@ -516,19 +409,12 @@ def y_to_comp(y):
     denom = max(1.0 - y0, 1e-18)
     return y[1:] / denom
 
-def normalize_comp(N):
-    denom = float(np.sum(N))
-    if denom > 0:
-        return (N / denom)
-    return N
-
 def export_block(folder, data_file, fit_file, norm_file, sample_idx, times, states, fitness_fn, num_otus):
     """
-    Write debug slices exactly like the gLV exporter:
+    Write debug slices (Hofbauer):
       - data_*: raw states (shape K x S)
       - fitness_*: r + A N at those states
-      - normed_*: normalized states (scaled to n/num_otus like your original)
-    Column names and file names are unchanged; only parent folder differs for Hofbauer.
+      - normed_*: normalized states scaled by n_present/num_otus
     """
     # data
     df = pd.DataFrame(states)
@@ -546,7 +432,7 @@ def export_block(folder, data_file, fit_file, norm_file, sample_idx, times, stat
     df.insert(0, 'sample', sample_idx)
     df.to_csv(fit_file, mode='a', index=False, header=not os.path.getsize(fit_file))
 
-    # normalized states (same scaling rule you used)
+    # normalized states
     n_present = (states[0] > 0).sum()  # count nonzero at first exported slice
     sum_ = states.sum(axis=-1, keepdims=True)
     sum_[sum_ == 0] = 1
@@ -572,11 +458,6 @@ def interp_traj(times, states, targets):
     for j in range(S):
         out[:, j] = np.interp(targets, times, states[:, j])
     return out
-
-def log_time(finaltime, eval_steps):
-    if eval_steps < 2:
-        return np.array([finaltime], dtype=float)
-    return np.logspace(0, np.log10(finaltime + 1.0), eval_steps) - 1.0
 
 if __name__ == "__main__":
     main()
