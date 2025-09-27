@@ -3,7 +3,8 @@ import pandas as pd
 import os
 import argparse
 import warnings
-from hofbauer_dynamic_steps import DynamicTauStepper
+from hofbauer_dynamic_steps import comp_speed_tau, compute_dtau, hof_clock, compderiv_l1
+
 
 
 def main():
@@ -21,22 +22,44 @@ def main():
     resume = False
 
     # debug output parameters
-    export_steps = 13
+    export_steps = 15
 
     # HofTW (virtual-time) controls
-    tau_fixed_default = 2.65822        # total virtual horizon τ
-    t_stepnum_multiplier_default = 1  # K ≈ (len(t)-1) * multiplier
+    # tau_fixed_default = 10        # total virtual horizon τ
     warp_variant_default = "one_plus_B"  # "one_plus_B" (dτ=dt/(1+B)) or "B" (dτ=dt/B)
 
     # Composition-adaptive step-size (smoothed L1 of composition drift)
-    comp_tol_default = 1e-2
-    comp_delta_default = 0.5 # 1.0
-    l1_smooth_eps_default = 1e-8
-    tau_scale_alpha_default =  2.40282 # optional global scale for dtau
+    # comp_tol_default = 1e-2
+    # comp_delta_default = 1.0 # 1.0
+    # l1_smooth_eps_default = 1e-8
+    # tau_scale_alpha_default =  1.0 # optional global scale for dtau
+    # K_default = 50
+
+    # T_post_default = 150.0
+    # K_post_default = 150
+
+    T_post_default = None
+    K_post_default = 0
+
+
+    # # Hofbauer grid controls
+    # tau_fixed_default = 3500
+    # K_default = 100
+
+    # tau_scale_alpha_default = 1.0
+    # delta_default = 1.0
+    # comp_tol_default = 1e-2
+    # l1_smooth_eps_default = 1e-8
+
+        # Hofbauer grid controls
+    tau_fixed_default = 40000
     K_default = 300
 
-    T_post_default = 150.0
-    K_post_default = 150
+    tau_scale_alpha_default = 1.0
+    comp_delta_default = 1.0
+    comp_tol_default = 1e-2
+    l1_smooth_eps_default = 1e-8
+
 
     parser = argparse.ArgumentParser(
         description="Run GLV (physical) + GLV in Hofbauer-like virtual time (HofTW) with composition-adaptive τ steps"
@@ -52,8 +75,6 @@ def main():
     # HofTW virtual horizon and grid density
     parser.add_argument("--tau_fixed", type=float, default=tau_fixed_default,
                         help="Virtual (HofTW) horizon to integrate to for the second run")
-    parser.add_argument("--t_stepnum_multiplier", type=float, default=t_stepnum_multiplier_default,
-                        help="Multiplier on (len(t.csv)-1) to set number of virtual steps K")
     parser.add_argument("--warp_variant", type=str, default=warp_variant_default,
                         choices=["one_plus_B", "B"],
                         help="Choose uncorrected Hofbauer clock 1/(1+B) or 1/B")
@@ -99,7 +120,6 @@ def main():
     time_file = args.time_file
     export_steps = args.export_steps
     tau_fixed = float(args.tau_fixed)
-    t_stepnum_multiplier = float(args.t_stepnum_multiplier)
     warp_variant = args.warp_variant
     comp_tol = float(args.comp_tol)
     comp_delta = float(args.comp_delta)
@@ -186,6 +206,9 @@ def main():
     compderiv_file_tau = f"{debug_path2}compderiv_{chunk_id}.csv"
     compderiv_file_tau_tau = f"{debug_path2}tau-compderiv_{chunk_id}.csv"
 
+    tau_steps_file_hofTW  = f"{debug_path2}tau-time-steps_{chunk_id}.csv"
+    phys_steps_file_hofTW = f"{debug_path2}time-steps_{chunk_id}.csv"
+
     os.makedirs(out_path, exist_ok=True)
     os.makedirs(debug_path, exist_ok=True)
     os.makedirs(debug_path2, exist_ok=True)
@@ -194,7 +217,7 @@ def main():
         for p in [output_file, fitness_file, norm_file, final_file, compderiv_file,
                   output_file_tau, fitness_file_tau, norm_file_tau, final_file_tau,
                   output_file_tau_tau, fitness_file_tau_tau, norm_file_tau_tau,
-                  compderiv_file_tau, compderiv_file_tau_tau]:
+                  compderiv_file_tau, compderiv_file_tau_tau, tau_steps_file_hofTW, phys_steps_file_hofTW]:
             open(p, 'w').close()
 
     run_simulation(
@@ -230,6 +253,8 @@ def main():
         comp_tol=comp_tol, comp_delta=comp_delta, l1_smooth_eps=l1_smooth_eps,
         tau_scale_alpha=tau_scale_alpha,
         T_post=T_post, K_post=K_post, 
+        tau_steps_file_hofTW=tau_steps_file_hofTW,
+        phys_steps_file_hofTW=phys_steps_file_hofTW, 
     )
 
 
@@ -285,6 +310,110 @@ def safe_gLV_ode(t, x, fitness_fn, warned_flag, replicator_normalize,
     return dxdt
 
 
+# ---------- gLV-in-τ with composition-only adaptive step size ---------- #
+def glv_tau_comp_adaptive(
+    fitness_fn, N0, tau_fixed, K, warp_variant="one_plus_B",
+    comp_tol=1e-2, comp_delta=1.0, l1_smooth_eps=1e-8, tau_scale_alpha=1.0,
+    T_post=None, K_post=0,
+    clip_min=1e-10, clip_max=1e8, tiny=1e-12
+):
+    """
+    HofTW τ-integration with composition-adaptive dτ.
+
+    Phase A (τ-budget): up to K steps with cumulative τ reaching tau_fixed (uses budget guard).
+    Phase B (post-τ): up to K_post extra steps ignoring the τ budget, continuing until physical
+                      time reaches T_post (if provided).  No padding here; we pad/truncate later.
+    """
+    N = np.array(N0, dtype=np.float64)
+    N[N < 0] = 0
+
+    Ns = [N.copy()]
+    tau_times = [0.0]
+    tphys_times = [0.0]
+
+    dtau0 = float(tau_fixed) / float(max(1, K))
+    tau_accum = 0.0
+
+    # ---------- Phase A: τ-budget (up to K steps) ----------
+    for _ in range(K):
+        Nc = np.where(N == 0, 0, np.clip(N, clip_min, clip_max))
+        B  = float(np.sum(Nc))
+        g  = hof_clock(B, warp_variant, tiny=tiny)
+
+        v_norm = comp_speed_tau(Nc, fitness_fn, g=g, l1_smooth_eps=l1_smooth_eps, tiny=tiny)
+        rem_tau = tau_fixed - tau_accum
+        dtau = compute_dtau(dtau0, v_norm, comp_tol, comp_delta, alpha=tau_scale_alpha, tiny=tiny, rem_tau=rem_tau)
+
+        # Heun in τ
+        f  = fitness_fn(Nc)
+        rhs0 = g * (Nc * f)
+        Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
+
+        Bp   = float(np.sum(Np))
+        gp   = hof_clock(Bp, warp_variant, tiny=tiny)
+        fp   = fitness_fn(Np)
+        rhsp = gp * (Np * fp)
+
+        N_new   = N + 0.5 * dtau * (rhs0 + rhsp)
+        N_new[N_new < 0] = 0
+        dt_phys = 0.5 * (g + gp) * dtau
+
+        N = N_new
+        tau_accum += dtau
+        Ns.append(N.copy())
+        tau_times.append(tau_accum)
+        tphys_times.append(tphys_times[-1] + dt_phys)
+
+        if rem_tau - dtau <= 1e-15:
+            break  # τ budget exactly exhausted
+
+    # ---------- Phase B: post-τ continuation (up to K_post steps) ----------
+    for _ in range(max(0, K_post)):
+        if T_post is not None and tphys_times[-1] >= T_post - 1e-15:
+            break
+
+        Nc = np.where(N == 0, 0, np.clip(N, clip_min, clip_max))
+        B  = float(np.sum(Nc))
+        g  = hof_clock(B, warp_variant, tiny=tiny)
+
+        v_norm = comp_speed_tau(Nc, fitness_fn, g=g, l1_smooth_eps=l1_smooth_eps, tiny=tiny)
+        dtau = compute_dtau(dtau0, v_norm, comp_tol, comp_delta, alpha=tau_scale_alpha, tiny=tiny)
+
+        # predictor to estimate dt_phys and cap to hit T_post exactly if needed
+        f  = fitness_fn(Nc)
+        rhs0 = g * (Nc * f)
+        Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
+
+        Bp   = float(np.sum(Np))
+        gp   = hof_clock(Bp, warp_variant, tiny=tiny)
+        fp   = fitness_fn(Np)
+        rhsp = gp * (Np * fp)
+        dt_phys = 0.5 * (g + gp) * dtau
+
+        if T_post is not None and (tphys_times[-1] + dt_phys) > T_post:
+            s = max(0.0, (T_post - tphys_times[-1]) / (dt_phys + tiny))
+            dtau *= s
+            Np   = np.where(N + dtau * rhs0 == 0, 0, np.clip(N + dtau * rhs0, clip_min, clip_max))
+            Bp   = float(np.sum(Np))
+            gp   = hof_clock(Bp, warp_variant, tiny=tiny)
+            fp   = fitness_fn(Np)
+            rhsp = gp * (Np * fp)
+            dt_phys = 0.5 * (g + gp) * dtau
+
+        N_new   = N + 0.5 * dtau * (rhs0 + rhsp)
+        N_new[N_new < 0] = 0
+
+        N = N_new
+        Ns.append(N.copy())
+        tau_times.append(tau_times[-1] + dtau)
+        tphys_times.append(tphys_times[-1] + dt_phys)
+
+    Ns = np.stack(Ns, axis=0)
+    tau_times = np.asarray(tau_times, dtype=np.float64)
+    tphys_times = np.asarray(tphys_times, dtype=np.float64)
+    return Ns, tau_times, tphys_times
+
+
 
 def gLV(fitness_fn, x_0, t, replicator_normalize):
     warned_flag = {"low_warned": False, "high_warned": False}
@@ -316,7 +445,7 @@ def pad_truncate_2d(X, L):
 
 
 
-def run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file, norm_file,
+def run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file, norm_file, 
                    t, export_idx_glv, t_export_glv, num_otus, samples=None, resume=False,
                    replicator_normalization=False,
                    # NEW: comp-deriv (gLV)
@@ -325,6 +454,7 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file
                    final_file_tau=None, output_file_tau=None, fitness_file_tau=None, norm_file_tau=None,
                    output_file_tau_tau=None, fitness_file_tau_tau=None, norm_file_tau_tau=None,
                    compderiv_file_tau=None, compderiv_file_tau_tau=None,
+                   tau_steps_file_hofTW=None, phys_steps_file_hofTW=None,
                    K=None, tau_fixed=None, warp_variant="one_plus_B",
                    comp_tol=1e-2, comp_delta=1.0, l1_smooth_eps=1e-8, tau_scale_alpha=1.0, T_post=None, K_post=None):
     """
@@ -422,29 +552,34 @@ def run_simulation(input_file, fitness_fn, final_file, output_file, fitness_file
 
         # ===== HofTW: run and cache =====
         if (K is not None) and (tau_fixed is not None):
-            stepper = DynamicTauStepper(
-                fitness_fn,
+            N_traj_tau, tau_times, tphys_times = glv_tau_comp_adaptive(
+                fitness_fn=fitness_fn,
+                N0=x_0,
+                tau_fixed=tau_fixed,
+                K=K,
                 warp_variant=warp_variant,
                 comp_tol=comp_tol,
                 comp_delta=comp_delta,
                 l1_smooth_eps=l1_smooth_eps,
                 tau_scale_alpha=tau_scale_alpha,
+                T_post=T_post,
+                K_post=K_post,
             )
-
-            N_traj_tau, tau_times, tphys_times = stepper.integrate(
-                N0=x_0,
-                tau_fixed=tau_fixed,
-                K=K,
-                T_post=T_post,     # neutral if None
-                K_post=K_post,     # neutral if 0
-                return_mode="traj"
-            )
-
             hof_states.append(N_traj_tau)
             hof_tau_times.append(tau_times)
             hof_tphys_times.append(tphys_times)
             hof_npresent.append(n)
             hof_sample_ids.append(i)
+
+            # --- NEW: raw per-step times (no interpolation/averaging)
+            steps = np.arange(len(tau_times), dtype=int)
+            pd.DataFrame({"sample": i, "step": steps, "tau": tau_times}).to_csv(
+                tau_steps_file_hofTW, mode="a", index=False, header=not bool(os.path.getsize(tau_steps_file_hofTW))
+            )
+            pd.DataFrame({"sample": i, "step": steps, "t": tphys_times}).to_csv(
+                phys_steps_file_hofTW, mode="a", index=False, header=not bool(os.path.getsize(phys_steps_file_hofTW))
+            )
+
 
         processed_this_run += 1
         completed_overall = start_index + processed_this_run
@@ -594,21 +729,6 @@ def interp_traj(times, states, targets):
         out[:, j] = np.interp(targets, times, states[:, j])
     return out
 
-
-def compderiv_l1(states, fitness_fn, tiny=1e-12):
-    """
-    Raw L1 norm of the composition derivative v = x ⊙ (f - φ),
-    where x = N / sum(N), f = (r + A N), φ = sum_i x_i f_i.
-    Returns shape (T,) for states shape (T, S).
-    """
-    N = np.asarray(states, dtype=float)
-    B = N.sum(axis=1, keepdims=True)
-    B = np.maximum(B, tiny)
-    x = N / B
-    f = np.asarray(fitness_fn(N), dtype=float)
-    phi = (x * f).sum(axis=1, keepdims=True)
-    v = x * (f - phi)
-    return np.sum(np.abs(v), axis=1)
 
 
 if __name__ == "__main__":

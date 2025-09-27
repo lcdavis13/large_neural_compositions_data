@@ -7,8 +7,8 @@ import os
 
 otu_num = 256
 # proj = f"{otu_num}/random-3-gLV"
-proj = f"{otu_num}/random-3-gLV-HofTW"
-# proj = f"{otu_num}/random-3-Hof"
+# proj = f"{otu_num}/random-3-gLV-HofTW"
+proj = f"{otu_num}/random-3-Hof"
 # proj = f"{otu_num}/random-1-RepHeun"
 # proj = f"{otu_num}/random-1-RepDEQ"
 # proj = f"{otu_num}/random-0-gLVHeun"
@@ -24,6 +24,7 @@ proj = f"{otu_num}/random-3-gLV-HofTW"
 # proj = f"{otu_num}/cnode1-1k-gLV"
 # proj = f"{otu_num}/cnode1-100k-gLV"
 inpath = f"synth/simulate/debug/{proj}/"
+# inpath = f"synth/simulate/debug/{proj}/tau-"
 mask_file = f"synth/_data/{otu_num}/_binary_0.csv"
 
 # File paths
@@ -38,6 +39,7 @@ num_otus = 256
 # mask_file = f"structured_synthetic_generation/assemblages/binary_out/256_rich71.8_var17.9/x0_0.csv"
 
 data_file = f'{inpath}data_0.csv'
+time_file = f'{inpath}time-steps_0.csv'
 normed_file = f'{inpath}normed_0.csv'
 fitness_file = f'{inpath}fitness_0.csv'
 compderiv_file = f'{inpath}compderiv_0.csv'
@@ -174,6 +176,28 @@ def plot_mag_over_time(data_filename, title, logscale):
     plt.tight_layout()
     plt.show()
 
+def plot_sample_features(data_filename, title, logscale):
+    df = pd.read_csv(data_filename, header=0)
+
+    # Get only feature columns
+    feature_cols = [col for col in df.columns if col not in ['sample']]
+    feature1 = feature_cols[0]  # assuming there's at least one feature column
+    feature2 = feature_cols[1]  # assuming there's at least one feature column
+
+    # Plot
+    plt.figure(figsize=(10, 4))
+    sns.lineplot(data=df, x=feature1, y=feature2, marker='o')
+    plt.title(title)
+    plt.xlabel(feature1)
+    if logscale:
+        plt.ylabel(f'{feature2} (logscale)')
+        plt.yscale('log')
+    else:
+        plt.ylabel(feature2)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 
 def plot_sum_mags_over_time(data_filename, title, logscale):
     df = pd.read_csv(data_filename, header=0)
@@ -215,6 +239,8 @@ for file, title in zip(ridge_files, titles):
         plot_ridge(df_long, title)
     else:
         print(f"File not found: {file} or {mask_file}")
+
+plot_sample_features(time_file, 'Physical Time vs Step', logscale=False)
 
 plot_sum_mags_over_time(data_file, 'Absolute Abundance L1 vs Time', logscale=False)
 

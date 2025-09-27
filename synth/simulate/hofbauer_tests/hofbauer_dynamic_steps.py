@@ -1,242 +1,88 @@
-"""
-Shared dynamic τ-stepping (HofTW) for gLV with composition-adaptive step sizes.
-
-This module factors out the dynamic timestepping used by both the calibration
-script and the main simulation script, so they cannot diverge.
-
-Usage (calibration script):
-
-    from dynamic_tau import DynamicTauStepper
-    stepper = DynamicTauStepper(
-        fitness_fn,
-        warp_variant=warp_variant,
-        comp_tol=comp_tol,
-        comp_delta=comp_delta,
-        l1_smooth_eps=l1_smooth_eps,
-        tau_scale_alpha=alpha,  # <- the candidate alpha
-    )
-    tau_used, T_end = stepper.integrate(
-        N0, tau_fixed=tau_fixed, K=K, return_mode="calib"
-    )
-
-Usage (simulation script):
-
-    from dynamic_tau import DynamicTauStepper
-    stepper = DynamicTauStepper(
-        fitness_fn,
-        warp_variant=warp_variant,
-        comp_tol=comp_tol,
-        comp_delta=comp_delta,
-        l1_smooth_eps=l1_smooth_eps,
-        tau_scale_alpha=tau_scale_alpha,
-    )
-    N_traj_tau, tau_times, tphys_times = stepper.integrate(
-        N0=x_0,
-        tau_fixed=tau_fixed,
-        K=K,
-        T_post=T_post,    # pass None and 0 to disable post-phase
-        K_post=K_post,    # (these do not change the core stepping)
-        return_mode="traj"
-    )
-
-Passing T_post=None and K_post=0 makes behavior identical to the "no extra
-phase" integrator. These knobs exist here only so both scripts can share the
-same code; they don't alter the core dynamic stepping when set to neutral
-values.
-"""
-from __future__ import annotations
-from typing import Callable, Literal, Tuple
+# hofbauer_dynamic_steps.py
 import numpy as np
 
-ReturnMode = Literal["traj", "calib"]
+__all__ = [
+    "hof_clock",
+    "comp_speed",         # physical-time composition speed (kept for reference)
+    "comp_speed_tau",     # NEW: virtual-time composition speed (preferred for adaptivity)
+    "compderiv_l1",
+    "compute_dtau",
+    "y_to_N_from_simplex",
+]
 
-
-class DynamicTauStepper:
-    """HofTW τ-integration with composition-adaptive dτ.
-
-    Parameters mirror the previous implementations so callers can preserve exact
-    behavior. All state clipping, warp variants, and Heun stepping are
-    identical to the inlined versions you had before.
+def hof_clock(B, warp_variant="one_plus_B", tiny=1e-12):
     """
+    Hofbauer clock g = dt/dτ as a function of biomass B.
+    - "one_plus_B": g = 1 + B
+    - "B":          g = max(B, tiny)
+    """
+    B = float(B)
+    if warp_variant == "one_plus_B":
+        return 1.0 + B
+    elif warp_variant == "B":
+        return max(B, tiny)
+    else:
+        raise ValueError(f"Unknown warp_variant: {warp_variant}")
 
-    def __init__(
-        self,
-        fitness_fn: Callable[[np.ndarray], np.ndarray],
-        *,
-        warp_variant: Literal["one_plus_B", "B"] = "one_plus_B",
-        comp_tol: float = 1e-2,
-        comp_delta: float = 1.0,
-        l1_smooth_eps: float = 1e-8,
-        tau_scale_alpha: float = 1.0,
-        clip_min: float = 1e-10,
-        clip_max: float = 1e8,
-        tiny: float = 1e-12,
-    ) -> None:
-        self.fitness_fn = fitness_fn
-        self.warp_variant = warp_variant
-        self.comp_tol = float(comp_tol)
-        self.comp_delta = float(comp_delta)
-        self.l1_smooth_eps = float(l1_smooth_eps)
-        self.tau_scale_alpha = float(tau_scale_alpha)
-        self.clip_min = float(clip_min)
-        self.clip_max = float(clip_max)
-        self.tiny = float(tiny)
+def _comp_velocity(N, fitness_fn, tiny):
+    """Return (x, v) where x is composition, v = x ⊙ (f - φ) in PHYSICAL time."""
+    N = np.asarray(N, dtype=float)
+    B = max(float(np.sum(N)), tiny)
+    x = N / B
+    f = np.asarray(fitness_fn(N), dtype=float)
+    phi = float(np.dot(x, f))
+    v = x * (f - phi)
+    return x, v
 
-    # ------------------------- public API ------------------------- #
-    def integrate(
-        self,
-        N0: np.ndarray,
-        *,
-        tau_fixed: float,
-        K: int,
-        T_post: float | None = None,
-        K_post: int = 0,
-        return_mode: ReturnMode = "traj",
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray] | Tuple[float, float]:
-        """
-        Run the adaptive τ integrator.
+def comp_speed(N, fitness_fn, l1_smooth_eps=1e-8, tiny=1e-12):
+    """
+    Smoothed L1 norm of composition velocity in PHYSICAL time:
+        v = x ⊙ (f - φ)
+    """
+    _, v = _comp_velocity(N, fitness_fn, tiny)
+    return float(np.sum(np.sqrt(v * v + l1_smooth_eps * l1_smooth_eps)))
 
-        If return_mode == "traj": returns (Ns, tau_times, tphys_times).
-        If return_mode == "calib": returns (tau_spent, t_phys) and ignores
-        arrays and padding. In both modes, the *dynamic* stepping is identical;
-        only what is recorded/returned differs.
-        """
-        if return_mode not in ("traj", "calib"):
-            raise ValueError("return_mode must be 'traj' or 'calib'")
+def comp_speed_tau(N, fitness_fn, warp_variant="one_plus_B", g=None, l1_smooth_eps=1e-8, tiny=1e-12):
+    """
+    Smoothed L1 norm of composition velocity in VIRTUAL time τ:
+        dx/dτ = g * x ⊙ (f - φ)
+    If g is None, we compute it from B = sum(N) using hof_clock(warp_variant).
+    """
+    N = np.asarray(N, dtype=float)
+    B = max(float(np.sum(N)), tiny)
+    _, v = _comp_velocity(N, fitness_fn, tiny)  # physical-time composition velocity
+    if g is None:
+        g = hof_clock(B, warp_variant, tiny=tiny)
+    v_tau = g * v
+    return float(np.sum(np.sqrt(v_tau * v_tau + l1_smooth_eps * l1_smooth_eps)))
 
-        N = np.array(N0, dtype=np.float64)
-        N[N < 0] = 0
+def compderiv_l1(states, fitness_fn, tiny=1e-12):
+    """Vectorized raw L1 norm of composition velocity over a trajectory (physical-time metric)."""
+    N = np.asarray(states, dtype=float)
+    B = np.sum(N, axis=1, keepdims=True)
+    B = np.maximum(B, tiny)
+    x = N / B
+    f = np.asarray(fitness_fn(N), dtype=float)
+    phi = np.sum(x * f, axis=1, keepdims=True)
+    v = x * (f - phi)
+    return np.sum(np.abs(v), axis=1)
 
-        # Common prep
-        dtau0 = float(tau_fixed) / float(max(1, int(K)))
-        tau_accum = 0.0
-        t_phys = 0.0
+def compute_dtau(dtau0, v_norm, comp_tol, comp_delta, alpha=1.0, tiny=1e-12, rem_tau=None):
+    """
+    Adaptive τ step size from a norm of composition speed (in *chosen* timebase):
+        dtau = dtau0 * alpha * (comp_tol / (v_norm + tiny))**comp_delta
+    Optionally clamp to remaining budget rem_tau.
+    """
+    dtau = float(dtau0) * float(alpha) * (float(comp_tol) / (float(v_norm) + tiny)) ** float(comp_delta)
+    if rem_tau is not None:
+        dtau = min(dtau, float(rem_tau))
+    return dtau
 
-        # Buffers only if we need trajectories
-        if return_mode == "traj":
-            Ns = [N.copy()]
-            tau_times = [0.0]
-            tphys_times = [0.0]
-
-        # ---------------- Phase A: within τ budget ---------------- #
-        for _ in range(int(K)):
-            Nc = np.where(N == 0, 0, np.clip(N, self.clip_min, self.clip_max))
-            B = float(np.sum(Nc))
-            g = (1.0 + B) if self.warp_variant == "one_plus_B" else max(B, self.tiny)
-
-            # composition drift magnitude (smoothed-L1 of replicator velocity)
-            x = Nc / max(B, self.tiny)
-            f = self.fitness_fn(Nc)
-            phi = float((x * f).sum())
-            v = x * (f - phi)
-            v_norm = np.sum(np.sqrt(v * v + self.l1_smooth_eps * self.l1_smooth_eps))
-
-            dtau = (
-                dtau0
-                * self.tau_scale_alpha
-                * (self.comp_tol / (v_norm + self.tiny)) ** self.comp_delta
-            )
-            rem_tau = tau_fixed - tau_accum
-            if dtau > rem_tau:
-                dtau = rem_tau
-
-            # Heun step in τ
-            rhs0 = g * (Nc * f)
-            Np = np.where(
-                N + dtau * rhs0 == 0,
-                0,
-                np.clip(N + dtau * rhs0, self.clip_min, self.clip_max),
-            )
-            Bp = float(np.sum(Np))
-            gp = (1.0 + Bp) if self.warp_variant == "one_plus_B" else max(Bp, self.tiny)
-            fp = self.fitness_fn(Np)
-            rhsp = gp * (Np * fp)
-
-            N_new = N + 0.5 * dtau * (rhs0 + rhsp)
-            N_new[N_new < 0] = 0
-
-            dt_phys = 0.5 * (g + gp) * dtau
-
-            # advance
-            N = N_new
-            tau_accum += dtau
-            t_phys += dt_phys
-
-            if return_mode == "traj":
-                Ns.append(N.copy())
-                tau_times.append(tau_accum)
-                tphys_times.append(t_phys)
-
-            # budget exactly exhausted
-            if rem_tau - dtau <= 1e-15:
-                break
-
-        if return_mode == "calib":
-            # For calibration we only need true τ spent and achieved physical time
-            return float(tau_accum), float(t_phys)
-
-        # --------------- Phase B: optional continuation --------------- #
-        # (kept here so the simulation script can share the same stepper; passing
-        #  T_post=None and K_post=0 disables this without altering Phase A.)
-        for _ in range(max(0, int(K_post))):
-            if T_post is not None and tphys_times[-1] >= T_post - 1e-15:
-                break
-
-            Nc = np.where(N == 0, 0, np.clip(N, self.clip_min, self.clip_max))
-            B = float(np.sum(Nc))
-            g = (1.0 + B) if self.warp_variant == "one_plus_B" else max(B, self.tiny)
-
-            x = Nc / max(B, self.tiny)
-            f = self.fitness_fn(Nc)
-            phi = float((x * f).sum())
-            v = x * (f - phi)
-            v_norm = np.sum(np.sqrt(v * v + self.l1_smooth_eps * self.l1_smooth_eps))
-
-            dtau = (
-                dtau0
-                * self.tau_scale_alpha
-                * (self.comp_tol / (v_norm + self.tiny)) ** self.comp_delta
-            )
-
-            # predictor for dt_phys to cap at T_post if needed
-            rhs0 = g * (Nc * f)
-            Np = np.where(
-                N + dtau * rhs0 == 0,
-                0,
-                np.clip(N + dtau * rhs0, self.clip_min, self.clip_max),
-            )
-            Bp = float(np.sum(Np))
-            gp = (1.0 + Bp) if self.warp_variant == "one_plus_B" else max(Bp, self.tiny)
-            fp = self.fitness_fn(Np)
-            rhsp = gp * (Np * fp)
-            dt_phys_pred = 0.5 * (g + gp) * dtau
-
-            if T_post is not None and (tphys_times[-1] + dt_phys_pred) > T_post:
-                s = max(0.0, (T_post - tphys_times[-1]) / (dt_phys_pred + self.tiny))
-                dtau *= s
-                # recompute predictor after scaling
-                Np = np.where(
-                    N + dtau * rhs0 == 0,
-                    0,
-                    np.clip(N + dtau * rhs0, self.clip_min, self.clip_max),
-                )
-                Bp = float(np.sum(Np))
-                gp = (1.0 + Bp) if self.warp_variant == "one_plus_B" else max(Bp, self.tiny)
-                fp = self.fitness_fn(Np)
-                rhsp = gp * (Np * fp)
-                dt_phys_pred = 0.5 * (g + gp) * dtau
-
-            N_new = N + 0.5 * dtau * (rhs0 + rhsp)
-            N_new[N_new < 0] = 0
-
-            N = N_new
-            Ns.append(N.copy())
-            tau_times.append(tau_times[-1] + dtau)
-            tphys_times.append(tphys_times[-1] + dt_phys_pred)
-
-        # finalize arrays
-        return (
-            np.stack(Ns, axis=0),
-            np.asarray(tau_times, dtype=np.float64),
-            np.asarray(tphys_times, dtype=np.float64),
-        )
+def y_to_N_from_simplex(y, tiny=1e-18):
+    """
+    Map Hofbauer simplex y (S+1,) to abundances N (S,):
+        N_i = y_i / y0,  i=1..S
+    """
+    y = np.asarray(y, dtype=float)
+    y0 = max(float(y[0]), tiny)
+    return y[1:] / y0
