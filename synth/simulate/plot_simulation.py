@@ -8,7 +8,8 @@ import os
 otu_num = 256
 # proj = f"{otu_num}/random-3-gLV"
 # proj = f"{otu_num}/random-3-gLV-HofTW"
-proj = f"{otu_num}/random-3-Hof"
+# proj = f"{otu_num}/random-3-Hof"
+proj = f"{otu_num}/random-3-Hof-FR"
 # proj = f"{otu_num}/random-1-RepHeun"
 # proj = f"{otu_num}/random-1-RepDEQ"
 # proj = f"{otu_num}/random-0-gLVHeun"
