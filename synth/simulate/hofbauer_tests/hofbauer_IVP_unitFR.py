@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import argparse
 import os
-# keep only what we still use
+# Only what we use from the original utilities
 from hofbauer_dynamic_steps import y_to_N_from_simplex, hof_clock
 
 
@@ -15,17 +15,8 @@ def main():
     assemblages_type = "x0"
     chunk_id = "0"
     samples = 15
-    export_steps = 13  # number of log-spaced export slices after alignment
-
-    # Legacy params kept for CLI compatibility; ignored under FR unit-speed
-    tau_fixed_default = 5000
+    export_steps = 13
     K_default = 100
-    tau_scale_alpha_default = 1.0
-    comp_delta_default = 1.0
-    comp_tol_default = 1e-2
-    l1_smooth_eps_default = 1e-8
-    adaptive_steps_default = True
-    timescale_glv_default = True
 
     parser = argparse.ArgumentParser(
         description="Run Hofbauer (replicator) with FR unit-speed internal time; export both internal τ and physical time."
@@ -36,31 +27,11 @@ def main():
     parser.add_argument("--chunk_id", type=str, default=chunk_id)
     parser.add_argument("--samples", type=int, default=samples)
     parser.add_argument("--export_steps", type=int, default=export_steps)
-
-    # Horizon / step count (only K is used now)
-    parser.add_argument("--tau_fixed", type=float, default=tau_fixed_default,
-                        help="[IGNORED] Kept for CLI compatibility.")
     parser.add_argument("--K", type=int, default=K_default,
                         help="Fixed number of FR internal (τ) steps (Heun).")
-
-    # Legacy adaptive/clock flags (ignored)
-    parser.add_argument("--comp_tol", type=float, default=comp_tol_default, help="[IGNORED]")
-    parser.add_argument("--comp_delta", type=float, default=comp_delta_default, help="[IGNORED]")
-    parser.add_argument("--l1_smooth_eps", type=float, default=l1_smooth_eps_default, help="[IGNORED]")
-    parser.add_argument("--tau_scale_alpha", type=float, default=tau_scale_alpha_default, help="[IGNORED]")
     parser.add_argument("--warp_variant", type=str, default="one_plus_B",
                         choices=["one_plus_B", "B"],
-                        help="Clock g = dt/dτ definition (used for physical time only).")
-
-    parser.set_defaults(adaptive_steps=adaptive_steps_default)
-    parser.add_argument("--adaptive_steps", dest="adaptive_steps", action="store_true", help="[IGNORED]")
-    parser.add_argument("--no_adaptive_steps", dest="adaptive_steps", action="store_false", help="[IGNORED]")
-
-    parser.set_defaults(timescale_correction=timescale_glv_default)
-    parser.add_argument("--timescale_correction", dest="timescale_correction", action="store_true",
-                        help="[IGNORED under FR unit-speed; τ is always internal FR time, t is physical time].")
-    parser.add_argument("--no_timescale_correction", dest="timescale_correction", action="store_false",
-                        help="[IGNORED]")
+                        help="Clock g = dt/dτ definition (used for physical time).")
 
     args = parser.parse_args()
 
@@ -81,7 +52,7 @@ def main():
     print(f"  samples: {samples}")
     print(f"  K (Heun steps): {K}")
     print(f"  warp_variant (for physical time): {warp_variant}")
-    print("  NOTE: adaptive/time-scale flags are ignored; τ=internal FR time, t=physical gLV time.")
+    print("  τ = internal FR arc-length, t = physical gLV time via Hofbauer clock.")
 
     # Paths
     interactions_path = f"synth/feature_interactions/{num_otus}/{interactions}/"
@@ -101,8 +72,8 @@ def main():
     # Hofbauer payoff matrix
     M = build_hofbauer_payoff(A, r)
 
-    # Output folders (preserve your layout)
-    output_id = f"{interactions}-gLV"  # keep same basename pattern as before
+    # Output folders
+    output_id = f"{interactions}-gLV"
     hof_folder = f"synth/simulate/debug/{num_otus}/{interactions}-Hof-FR/"
     hof_out_folder = f"synth/_data/{num_otus}/{interactions}-Hof-FR/"
     hof_out_prefix = f"{hof_out_folder}/{output_id}"
@@ -118,7 +89,7 @@ def main():
     tau_steps_file_hof = f"{hof_folder}tau-time-steps_{chunk_id}.csv"  # internal time (FR)
     phys_steps_file_hof = f"{hof_folder}time-steps_{chunk_id}.csv"     # physical gLV time
 
-    output_file_hof_tau = f"{hof_folder}tau-data_{chunk_id}.csv"     # τ-aligned export
+    output_file_hof_tau = f"{hof_folder}tau-data_{chunk_id}.csv"       # τ-aligned export
     fitness_file_hof_tau = f"{hof_folder}tau-fitness_{chunk_id}.csv"
     norm_file_hof_tau = f"{hof_folder}tau-normed_{chunk_id}.csv"
 
@@ -222,7 +193,6 @@ def main():
         print(f"Completed {processed}/{total_target} samples")
 
 
-
 # -------------------- numerics & helpers -------------------- #
 
 def even_index_subset(N, k):
@@ -275,6 +245,9 @@ def interp_traj(times, states, targets):
         out[:, j] = np.interp(targets, times, states[:, j])
     return out
 
+
+# -------------------- Hofbauer payoff & RHS -------------------- #
+
 def build_hofbauer_payoff(A, r):
     """Construct (S+1)x(S+1) payoff matrix M for Hofbauer embedding."""
     S = A.shape[0]
@@ -288,6 +261,9 @@ def replicator_rhs(y, M):
     p = M @ y
     phi = float(y @ p)
     return y * (p - phi)
+
+
+# -------------------- Simplex projections -------------------- #
 
 def project_simplex_clip(y, active_species_mask, clip_min=0.0):
     """
@@ -324,6 +300,7 @@ def project_simplex_clip(y, active_species_mask, clip_min=0.0):
         out /= s
     return out
 
+
 # ---------- Fisher–Rao (FR) geometry on augmented simplex ---------- #
 
 def fr_diameter_R(R):
@@ -356,6 +333,7 @@ def fr_speed_aug(v, y, active_aug_mask, eps=1e-12):
     va = v[a]
     return np.sqrt(np.sum((va * va) / ya))
 
+
 # -------------------- Hofbauer <-> abundances & composition -------------------- #
 
 def N_to_y(N):
@@ -381,6 +359,7 @@ def y_to_comp(y):
     y0 = float(y[0])
     denom = max(1.0 - y0, 1e-18)
     return y[1:] / denom
+
 
 # -------------------- Exports -------------------- #
 
@@ -417,7 +396,8 @@ def export_block(folder, data_file, fit_file, norm_file, sample_idx, times, stat
     df.insert(0, 'sample', sample_idx)
     df.to_csv(norm_file, mode='a', index=False, header=not os.path.getsize(norm_file))
 
-# -------------------- FR unit-speed Heun (internal τ) with physical time bookkeeping -------------------- #
+
+# -------------------- FR unit-speed Heun (internal τ) with physical-time bookkeeping -------------------- #
 
 def integrate_replicator_fr_unitspeed(
     y0, M, warp_variant="one_plus_B", K=300, clip_min=0.0, tiny=1e-12
