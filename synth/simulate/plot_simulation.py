@@ -6,10 +6,12 @@ import os
 
 
 otu_num = 256
+proj = f"{otu_num}/random-3-gLV-Hi"
 # proj = f"{otu_num}/random-3-gLV"
-# proj = f"{otu_num}/random-3-gLV-HofTW"
+# proj = f"{otu_num}/random-3-gLV-FR"
 # proj = f"{otu_num}/random-3-Hof"
-proj = f"{otu_num}/random-3-Hof-FR"
+# proj = f"{otu_num}/random-3-Hof-FR"
+# proj = f"{otu_num}/random-3-gLV-HofTW"
 # proj = f"{otu_num}/random-1-RepHeun"
 # proj = f"{otu_num}/random-1-RepDEQ"
 # proj = f"{otu_num}/random-0-gLVHeun"
@@ -43,10 +45,10 @@ data_file = f'{inpath}data_0.csv'
 time_file = f'{inpath}time-steps_0.csv'
 normed_file = f'{inpath}normed_0.csv'
 fitness_file = f'{inpath}fitness_0.csv'
-compderiv_file = f'{inpath}compderiv_0.csv'
 residual_file = f'{inpath}residual_0.csv'
-spectral_file = f'{inpath}spec-abscissa_0.csv'
-numerical_file = f'{inpath}num-abscissa_0.csv'
+# compderiv_file = f'{inpath}compderiv_0.csv'
+# spectral_file = f'{inpath}spec-abscissa_0.csv'
+# numerical_file = f'{inpath}num-abscissa_0.csv'
 
 
 
@@ -247,9 +249,9 @@ plot_sum_mags_over_time(data_file, 'Absolute Abundance L1 vs Time', logscale=Fal
 
 plot_sum_mags_over_time(fitness_file, 'Growth Rate L1 vs Time', logscale=True)
 
-plot_mag_over_time(compderiv_file, 'Compositional Change vs Time', logscale=False)
+# plot_mag_over_time(compderiv_file, 'Compositional Change vs Time', logscale=False)
 
-# plot_sum_mags_over_time(residual_file, 'Residual L1 vs Time', logscale=True)
+plot_sum_mags_over_time(residual_file, 'Residual L1 vs Time', logscale=True)
 
 # plot_mag_over_time(spectral_file, 'Spectral Abscissa vs Time', logscale=False)
 

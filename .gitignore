@@ -258,3 +258,4 @@ data/waimea_train_ids.csv
 /structured_synthetic_generation/simulate/out
 /synthetic_data_old/data
 *.csv
+/synth/experiments
